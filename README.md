@@ -139,5 +139,6 @@ MIT License - See LICENSE file for details
 ---
 
 **Built as a learning exercise by a CSE student**
-
+*NOTE:This is an educational project with no affiliation to velocix ltd or any other comapnies using similar names*
+*feel free to read src code any time and contribute*
 *A minimal framework experiment - use Starlette or FastAPI for real projects.*
