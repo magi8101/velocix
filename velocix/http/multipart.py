@@ -3,8 +3,7 @@ import os
 import tempfile
 from typing import Any, AsyncIterator
 
-from python_multipart import MultipartParser
-from python_multipart.multipart import parse_options_header
+from python_multipart.multipart import MultipartParser, parse_options_header
 
 
 class UploadFile:
