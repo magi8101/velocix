@@ -77,6 +77,7 @@ from velocix.security.ratelimit import RateLimitMiddleware, ProductionRateLimite
 from velocix.http.client import HTTPClient
 
 from functools import partial
+from typing import cast
 
 def create_app(
     title: str = "Velocix API",
