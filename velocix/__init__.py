@@ -71,10 +71,12 @@ from velocix.openapi.generator import OpenAPIGenerator
 from velocix.security.jwt import JWTManager, JWTHandler
 from velocix.security.password import PasswordManager, PasswordHasher
 from velocix.security.cors import CORSMiddleware
-from velocix.security.ratelimit import RateLimitMiddleware
+from velocix.security.ratelimit import RateLimitMiddleware, ProductionRateLimiter
 
 # HTTP Client
 from velocix.http.client import HTTPClient
+
+from functools import partial
 
 def create_app(
     title: str = "Velocix API",
@@ -104,7 +106,8 @@ def create_app(
         enable_auto_docs(app, title=title, version=version, description=description)
     
     if cors:
-        app.add_middleware(CORSMiddleware(
+        app.add_middleware(partial(
+            CORSMiddleware,
             allow_origins=["*"],
             allow_credentials=True,
             allow_methods=["*"],
@@ -112,12 +115,9 @@ def create_app(
         ))
     
     if rate_limit:
-        app.add_middleware(RateLimitMiddleware(
-            calls=100,
-            period=60
-        ))
-    
-    return app
+        limiter = ProductionRateLimiter()
+        limiter.set_global_window(limit=100, window_size=60)
+        app.add_middleware(partial(RateLimitMiddleware, limiter=limiter))
     
     return app
 
