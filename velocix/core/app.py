@@ -239,26 +239,7 @@ class Velocix:
         if handler is None:
             raise NotFound()
         
-        # Check if handler needs request parameter
-        import inspect
-        sig = inspect.signature(handler)
-        kwargs = {}
-        
-        if 'request' in sig.parameters:
-            kwargs['request'] = request
-        
-        # Add path parameters
-        for param_name, param_value in request.path_params.items():
-            if param_name in sig.parameters:
-                # Type conversion based on annotation
-                param = sig.parameters[param_name]
-                if param.annotation == int:
-                    try:
-                        kwargs[param_name] = int(param_value)
-                    except ValueError:
-                        kwargs[param_name] = param_value
-                else:
-                    kwargs[param_name] = param_value
+        kwargs = await resolve_dependencies(handler, request, request.path_params)
         
         result = await handler(**kwargs)
         
