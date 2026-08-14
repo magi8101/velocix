@@ -260,7 +260,8 @@ class Velocix:
         if isinstance(exc, HTTPException):
             return JSONResponse(
                 exc.to_dict(),
-                status_code=exc.status_code
+                status_code=exc.status_code,
+                headers=exc.headers or None
             )
         
         # Check custom handlers
