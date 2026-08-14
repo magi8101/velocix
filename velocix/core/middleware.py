@@ -232,12 +232,23 @@ class GZipMiddleware(BaseHTTPMiddleware):
         
         response = await call_next(request)
         
+        # Skip responses without a body (streaming/file/SSE) and already-encoded responses
+        if not hasattr(response, "body"):
+            return response
+        
+        if any(k == b"content-encoding" for k, v in response.raw_headers):
+            return response
+        
         # Only compress if body is large enough
         if len(response.body) < self.minimum_size:
             return response
         
         # Compress body
         compressed = gzip.compress(response.body, compresslevel=self.compresslevel)
+        
+        # Only keep if compression actually helped
+        if len(compressed) >= len(response.body):
+            return response
         
         # Update response
         response.body = compressed
