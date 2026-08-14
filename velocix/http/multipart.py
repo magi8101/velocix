@@ -3,6 +3,8 @@ import os
 import tempfile
 from typing import Any, AsyncIterator
 
+from python_multipart.multipart import MultipartParser, parse_options_header
+
 
 class UploadFile:
     """Uploaded file wrapper"""
@@ -39,6 +41,9 @@ class UploadFile:
         if self._closed:
             raise ValueError("File already closed")
         
+        if not self.file_path:
+            return b""
+        
         if self._file and not self._file.closed:
             self._file.close()
         
@@ -53,7 +58,7 @@ class UploadFile:
         self._closed = True
         
         if self._file and not self._file.closed:
-            await self._file.close()
+            self._file.close()
         
         if self.file_path and os.path.exists(self.file_path):
             os.unlink(self.file_path)
@@ -88,23 +93,98 @@ class MultipartForm:
         for part in content_type.split(";"):
             part = part.strip()
             if part.startswith("boundary="):
-                boundary = part[9:].strip('"')
+                boundary = part[len("boundary="):].strip('"')
                 break
         
         if not boundary:
             raise ValueError("Missing boundary in content-type")
         
+        chunks = []
+        total_size = 0
+        async for chunk in self._read_body(receive):
+            total_size += len(chunk)
+            if total_size > self._max_size:
+                raise ValueError(f"Form data exceeds max size {self._max_size}")
+            chunks.append(chunk)
+        
+        parsed: list[dict[str, Any]] = []
+        current: dict[str, Any] = {}
+        current_field: bytes = b""
+        current_value: bytes = b""
+        
+        def on_part_begin() -> None:
+            nonlocal current, current_field, current_value
+            current = {"headers": {}, "chunks": []}
+            current_field = b""
+            current_value = b""
+        
+        def on_header_field(data: bytes, start: int, end: int) -> None:
+            nonlocal current_field
+            current_field += data[start:end]
+        
+        def on_header_value(data: bytes, start: int, end: int) -> None:
+            nonlocal current_value
+            current_value += data[start:end]
+        
+        def on_header_end() -> None:
+            nonlocal current_field, current_value
+            key = current_field.strip().lower()
+            if key:
+                current["headers"][key] = current_value.strip()
+            current_field = b""
+            current_value = b""
+        
+        def on_part_data(data: bytes, start: int, end: int) -> None:
+            current["chunks"].append(data[start:end])
+        
+        def on_part_end() -> None:
+            parsed.append(current)
+        
+        parser = MultipartParser(
+            boundary=boundary,
+            callbacks={
+                "on_part_begin": on_part_begin,
+                "on_header_field": on_header_field,
+                "on_header_value": on_header_value,
+                "on_header_end": on_header_end,
+                "on_part_data": on_part_data,
+                "on_part_end": on_part_end,
+            },
+        )
+        
+        try:
+            for chunk in chunks:
+                parser.write(chunk)
+            parser.finalize()
+        except Exception as exc:
+            raise ValueError(f"Invalid multipart form data: {exc}") from exc
+        
         fields: dict[str, Any] = {}
         files: dict[str, UploadFile] = {}
         
-        total_size = 0
-        field_count = 0
-        
-        async for chunk in self._read_body(receive):
-            total_size += len(chunk)
+        for i, part in enumerate(parsed):
+            if i >= self._max_fields:
+                raise ValueError(f"Form data exceeds max fields {self._max_fields}")
             
-            if total_size > self._max_size:
-                raise ValueError(f"Form data exceeds max size {self._max_size}")
+            disposition = part["headers"].get(b"content-disposition", b"")
+            _, params = parse_options_header(disposition)
+            name = params.get(b"name", b"").decode("latin-1")
+            if not name:
+                continue
+            
+            data = b"".join(part["chunks"])
+            filename = params.get(b"filename")
+            
+            if filename is not None:
+                file_type = part["headers"].get(b"content-type", b"").decode("latin-1")
+                upload = UploadFile(
+                    filename.decode("latin-1"),
+                    file_type or "application/octet-stream"
+                )
+                await upload.write(data)
+                files[name] = upload
+            else:
+                fields[name] = data.decode("utf-8", errors="replace")
         
         return {"fields": fields, "files": files}
     
