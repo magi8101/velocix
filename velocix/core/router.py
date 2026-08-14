@@ -95,7 +95,8 @@ class Router:
             'DELETE': RouteNode(),
             'PATCH': RouteNode(),
             'HEAD': RouteNode(),
-            'OPTIONS': RouteNode()
+            'OPTIONS': RouteNode(),
+            'WEBSOCKET': RouteNode()
         }
         self.static_routes: Dict[str, Dict[str, Callable]] = defaultdict(dict)
         self.dynamic_patterns: List[tuple] = []
@@ -143,9 +144,9 @@ class Router:
             raise TypeError("Handler must be callable")
         
         # Validate HTTP method
-        valid_methods = {'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'}
+        valid_methods = {'GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'WEBSOCKET'}
         if method.upper() not in valid_methods:
-            raise ValueError(f"Invalid HTTP method: {method}")
+            raise ValueError(f"Invalid method: {method}")
         
         method = method.upper()
         
@@ -241,6 +242,13 @@ class Router:
         """OPTIONS route decorator"""
         def decorator(handler):
             self.add_route('OPTIONS', path, handler)
+            return handler
+        return decorator
+    
+    def websocket(self, path: str):
+        """WebSocket route decorator"""
+        def decorator(handler):
+            self.add_route('WEBSOCKET', path, handler)
             return handler
         return decorator
     
