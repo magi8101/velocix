@@ -184,7 +184,7 @@ class MultipartForm:
                 await upload.write(data)
                 files[name] = upload
             else:
-                fields[name] = data.decode("utf-8")
+                fields[name] = data.decode("utf-8", errors="replace")
         
         return {"fields": fields, "files": files}
     
