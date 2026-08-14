@@ -188,12 +188,14 @@ class Velocix:
         
         try:
             handler, path_params = self.router.resolve("WEBSOCKET", ws.path)
-        except:
+        except Exception:
             handler, path_params = None, {}
         
         if handler is None:
             await send({"type": "websocket.close", "code": 1000})
             return
+        
+        ws.path_params = path_params
         
         try:
             await handler(ws)
