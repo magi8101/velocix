@@ -153,7 +153,8 @@ class MultipartForm:
         )
         
         try:
-            parser.write(b"".join(chunks))
+            for chunk in chunks:
+                parser.write(chunk)
             parser.finalize()
         except Exception as exc:
             raise ValueError(f"Invalid multipart form data: {exc}")
