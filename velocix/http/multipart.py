@@ -162,8 +162,8 @@ class MultipartForm:
         fields: dict[str, Any] = {}
         files: dict[str, UploadFile] = {}
         
-        for part in parsed:
-            if len(fields) + len(files) >= self._max_fields:
+        for i, part in enumerate(parsed):
+            if i >= self._max_fields:
                 raise ValueError(f"Form data exceeds max fields {self._max_fields}")
             
             disposition = part["headers"].get(b"content-disposition", b"")
