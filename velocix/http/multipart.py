@@ -157,7 +157,7 @@ class MultipartForm:
                 parser.write(chunk)
             parser.finalize()
         except Exception as exc:
-            raise ValueError(f"Invalid multipart form data: {exc}")
+            raise ValueError(f"Invalid multipart form data: {exc}") from exc
         
         fields: dict[str, Any] = {}
         files: dict[str, UploadFile] = {}
