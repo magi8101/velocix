@@ -137,7 +137,9 @@ class Velocix:
             if message["type"] == "lifespan.startup":
                 try:
                     for handler in self._startup_handlers:
-                        await handler()
+                        result = handler()
+                        if asyncio.iscoroutine(result):
+                            await result
                     await send({"type": "lifespan.startup.complete"})
                 except Exception as exc:
                     logger.exception("Startup failed")
@@ -151,7 +153,9 @@ class Velocix:
                     await asyncio.gather(*self._background_tasks, return_exceptions=True)
                     
                     for handler in self._shutdown_handlers:
-                        await handler()
+                        result = handler()
+                        if asyncio.iscoroutine(result):
+                            await result
                     
                     await send({"type": "lifespan.shutdown.complete"})
                 except Exception as exc:

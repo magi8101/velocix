@@ -118,19 +118,58 @@ class TestClient:
         await self._shutdown()
     
     async def _startup(self) -> None:
-        """Execute app startup"""
+        """Execute app startup via ASGI lifespan"""
         if self._lifespan_started:
             return
         
         self._lifespan_started = True
-        
-        if hasattr(self.app, 'router') and hasattr(self.app.router, 'startup'):
-            await self.app.router.startup()
+        await self._run_lifespan("lifespan.startup")
     
     async def _shutdown(self) -> None:
-        """Execute app shutdown"""
-        if hasattr(self.app, 'router') and hasattr(self.app.router, 'shutdown'):
-            await self.app.router.shutdown()
+        """Execute app shutdown via ASGI lifespan"""
+        await self._run_lifespan("lifespan.shutdown")
+    
+    async def _run_lifespan(self, message_type: str) -> None:
+        """Drive the app's ASGI lifespan protocol"""
+        completed: asyncio.Event = asyncio.Event()
+        failure: List[str] = []
+        sent = False
+        
+        async def receive() -> Dict[str, Any]:
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": message_type}
+            await asyncio.Event().wait()
+        
+        async def send(message: Dict[str, Any]) -> None:
+            if message["type"] == f"{message_type}.complete":
+                completed.set()
+            elif message["type"] == f"{message_type}.failed":
+                failure.append(str(message.get("message", "")))
+                completed.set()
+        
+        task = asyncio.create_task(
+            self.app(
+                {
+                    "type": "lifespan",
+                    "asgi": {"version": "3.0", "spec_version": "2.0"},
+                },
+                receive,
+                send,
+            )
+        )
+        
+        try:
+            await asyncio.wait_for(completed.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Lifespan {message_type} timed out")
+        finally:
+            if not task.done():
+                task.cancel()
+        
+        if failure:
+            raise RuntimeError(f"Lifespan {message_type} failed: {failure[0]}")
     
     def _merge_headers(self, headers: Optional[Dict[str, str]]) -> Dict[str, str]:
         """Merge default headers with request headers"""
