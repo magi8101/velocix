@@ -260,10 +260,6 @@ class JSONResponse(Response):
     """
     JSON response with orjson serialization - Optimized for maximum performance.
 
-    Expected performance:
-    - Pure Python optimized: ~2,300-3,200 RPS
-    - With platform optimizations: ~2,400-3,500 RPS
-
     Features:
     - Bypasses parent render() for direct orjson encoding
     - Inline header construction with pre-allocated tuple
@@ -272,6 +268,27 @@ class JSONResponse(Response):
     """
 
     __slots__ = ()  # Inherit parent slots, no additional attributes
+
+    @classmethod
+    def from_body(cls, body: bytes, status_code: int = 200) -> "JSONResponse":
+        """
+        Build a JSONResponse from a pre-serialized body (skips orjson).
+        Used by the response cache to reuse serialized bytes.
+        """
+        self = cls.__new__(cls)
+        self.status_code = status_code
+        self.media_type = "application/json"
+        self.charset = "utf-8"
+        self.background = None
+        self.body = body
+        body_len = len(body)
+        self.raw_headers = [
+            _JSON_CONTENT_TYPE_HEADER,
+            (_CONTENT_LENGTH, str(body_len).encode("latin-1")),
+        ]
+        self._headers = None
+        self._headers_set = False
+        return self
 
     def __init__(
         self, content: Any, status_code: int = 200, headers: dict[str, str] | None = None

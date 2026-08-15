@@ -95,6 +95,20 @@ Every entry below is a code change followed by a measured before/after.
 | Live granian `/users` | 100.5K req/s | 114.3K req/s |
 | Live granian `/items` | 76.2K req/s | 83.4K req/s |
 
+### Round 3 — response-body cache (`@cache_response`)
+
+Added an opt-in `@cache_response(ttl)` decorator that caches the
+orjson-serialized body (the most expensive part of a JSON response), keyed by
+method + path + query string, with TTL expiry. The cached value is the
+pre-serialized bytes — cache hits skip the handler *and* orjson entirely
+(`JSONResponse.from_body`). Only caches dict/JSON responses; opt-in per route,
+so only handlers with request-independent output should use it.
+
+| Test | Uncached | Cached |
+|---|---|---|
+| In-process `/items`-style (7.9 KB) | 48.5K req/s | **379K req/s (7.8×)** |
+| Live granian `/items`-style, 4 workers | 85.9K req/s | **147.7K req/s (1.7×)** |
+
 ### Round 2 — request/response hot path
 
 - `Request.__init__` created a new class object per request

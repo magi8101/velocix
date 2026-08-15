@@ -1,6 +1,5 @@
 """
-Optimized Velocix Router with 681K+ req/s performance
-Production-ready with caching, bloom filters, and advanced routing
+Optimized Velocix Router with caching, bloom filters, and advanced routing
 """
 
 import math
