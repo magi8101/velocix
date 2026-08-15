@@ -35,7 +35,8 @@ class Velocix:
         "_startup_handlers",
         "_shutdown_handlers",
         "_background_tasks",
-        "_compiled_middleware"
+        "_compiled_middleware",
+        "_startup_complete"
     )
     
     def __init__(self, debug: bool = False) -> None:
@@ -47,6 +48,7 @@ class Velocix:
         self._shutdown_handlers: list[Any] = []
         self._background_tasks: set[Any] = set()
         self._compiled_middleware: Any = None
+        self._startup_complete: bool = False
         self._error_handler = ErrorHandler(debug=debug)
         
         self._setup_default_exception_handlers()
@@ -140,6 +142,7 @@ class Velocix:
                         result = handler()
                         if asyncio.iscoroutine(result):
                             await result
+                    self._startup_complete = True
                     await send({"type": "lifespan.startup.complete"})
                 except Exception as exc:
                     logger.exception("Startup failed")
@@ -147,6 +150,7 @@ class Velocix:
             
             elif message["type"] == "lifespan.shutdown":
                 try:
+                    self._startup_complete = False
                     for task in self._background_tasks:
                         task.cancel()
                     
@@ -171,6 +175,7 @@ class Velocix:
     ) -> None:
         """Handle HTTP request"""
         request = Request(scope, receive)
+        request.app = self
         
         try:
             response = await self._process_request(request)
