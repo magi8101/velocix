@@ -271,6 +271,11 @@ class Router:
             self.route_cache[cache_key] = CachedRoute(handler, {})
             return handler, {}
         
+        # Path exists but not for this method
+        allowed = self._find_methods(path) - {method}
+        if allowed:
+            raise MethodNotAllowed(allowed_methods=sorted(allowed))
+        
         # Dynamic route resolution with error handling
         tree = self.method_trees.get(method)
         if not tree:
@@ -325,7 +330,53 @@ class Router:
             
             return handler, params
         
+        # Path exists but not for this method
+        allowed = self._find_methods(path) - {method}
+        if allowed:
+            raise MethodNotAllowed(allowed_methods=sorted(allowed))
+        
         raise NotFound(f"Route not found: {path}")
+    
+    def _find_methods(self, path: str) -> Set[str]:
+        """Find all methods registered for a path (static or dynamic)"""
+        methods: Set[str] = set()
+        
+        for method, routes in self.static_routes.items():
+            if path in routes:
+                methods.add(method)
+        
+        if methods:
+            return methods
+        
+        parts = [p for p in path.split('/') if p]
+        
+        for method, tree in self.method_trees.items():
+            current = tree
+            matched = True
+            
+            for part in parts:
+                if part in current.children:
+                    current = current.children[part]
+                elif current.param_child:
+                    param_name = current.param_name
+                    if param_name and param_name in current.param_child.constraints:
+                        constraint = current.param_child.constraints[param_name]
+                        try:
+                            if not constraint(part):
+                                matched = False
+                                break
+                        except Exception:
+                            matched = False
+                            break
+                    current = current.param_child
+                else:
+                    matched = False
+                    break
+            
+            if matched and current.is_endpoint:
+                methods.add(method)
+        
+        return methods
     
     def add_middleware(self, middleware: Callable):
         """Add middleware to stack"""
