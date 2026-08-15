@@ -227,6 +227,7 @@ class Velocix:
                 raise NotFound(f"Route not found: {request.path}")
 
             request.path_params = path_params
+            request._handler = handler
 
             if self._compiled_middleware is None:
                 self._compiled_middleware = build_middleware_stack(
@@ -247,10 +248,13 @@ class Velocix:
 
     async def _execute_handler(self, request: Request) -> ResponseType:
         """Execute route handler with dependency injection"""
-        handler, _ = self.router.resolve(request.method, request.path)
+        handler = request._handler
 
         if handler is None:
-            raise NotFound()
+            # Fallback for handlers invoked outside the normal request path
+            handler, _ = self.router.resolve(request.method, request.path)
+            if handler is None:
+                raise NotFound()
 
         kwargs = await resolve_dependencies(handler, request, request.path_params)
 
@@ -301,7 +305,7 @@ class Velocix:
                 {
                     "type": "http.response.start",
                     "status": response.status_code,
-                    "headers": [(k.encode(), v.encode()) for k, v in response.headers.items()],
+                    "headers": response.asgi_headers(),
                 }
             )
 
@@ -330,7 +334,7 @@ class Velocix:
                 {
                     "type": "http.response.start",
                     "status": response.status_code,
-                    "headers": [(k.encode(), v.encode()) for k, v in response.headers.items()],
+                    "headers": response.asgi_headers(),
                 }
             )
 

@@ -34,6 +34,12 @@ class ClientDisconnect(Exception):
     pass
 
 
+class _RequestState:
+    """Per-request state namespace (module-level to avoid per-request class creation)"""
+
+    pass
+
+
 class Request:
     """HTTP Request with lazy parsing and property caching"""
 
@@ -57,6 +63,7 @@ class Request:
         "_query_string",
         "_stream_consumed",
         "_is_disconnected",
+        "_handler",
     )
 
     def __init__(self, scope: dict[str, Any], receive: Any, send: Any = None) -> None:
@@ -80,10 +87,13 @@ class Request:
         self.path_params: dict[str, str] = scope.get("path_params", {})
 
         # State object for middleware
-        self.state: Any = type("State", (), {})()
+        self.state: _RequestState = _RequestState()
 
         # Owning application (set by the ASGI app)
         self.app: Any = None
+
+        # Resolved handler (set by the app before middleware runs)
+        self._handler: Any = None
 
         # Pre-cache frequently accessed immutable properties
         self._method: str = scope["method"]

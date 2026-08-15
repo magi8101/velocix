@@ -200,6 +200,17 @@ class Response:
             self._headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in self.raw_headers}
         return self._headers
 
+    def asgi_headers(self) -> list[tuple[bytes, bytes]]:
+        """
+        ASGI-ready headers as (bytes, bytes) pairs.
+
+        Uses the pre-encoded raw_headers when the str-dict view was never
+        materialized or mutated, avoiding a decode/encode round-trip.
+        """
+        if self._headers is None:
+            return self.raw_headers
+        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in self._headers.items()]
+
     def set_cookie(
         self,
         key: str,
@@ -310,6 +321,10 @@ class StreamingResponse:
 
         if "content-type" not in {k.lower() for k in self.headers}:
             self.headers["content-type"] = media_type
+
+    def asgi_headers(self) -> list[tuple[bytes, bytes]]:
+        """ASGI-ready headers as (bytes, bytes) pairs"""
+        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in self.headers.items()]
 
     def __repr__(self) -> str:
         return f"StreamingResponse(status_code={self.status_code}, media_type={self.media_type!r})"
