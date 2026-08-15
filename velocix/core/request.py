@@ -45,6 +45,7 @@ class Request:
         "_base_url",
         "path_params",
         "state",
+        "app",
         "_method",
         "_path",
         "_headers",
@@ -75,6 +76,9 @@ class Request:
         
         # State object for middleware
         self.state: Any = type("State", (), {})()
+        
+        # Owning application (set by the ASGI app)
+        self.app: Any = None
         
         # Pre-cache frequently accessed immutable properties
         self._method: str = scope["method"]
