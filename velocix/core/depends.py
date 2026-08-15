@@ -11,6 +11,9 @@ from typing import Any, TypeVar, get_type_hints
 # Signature cache for performance
 _sig_cache: dict[int, inspect.Signature] = {}
 _type_hints_cache: dict[int, dict[str, Any]] = {}
+# Precomputed resolution plan per handler: tuple of (param_name, kind, extra)
+# kind: "request" | "depends" | "path" ; extra: Depends instance or type hint
+_plan_cache: dict[int, tuple[tuple[str, str, Any], ...]] = {}
 
 T = TypeVar("T")
 
@@ -68,6 +71,30 @@ def _get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
     return _type_hints_cache[func_id]
 
 
+def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, Any], ...]:
+    """Precompute the per-handler resolution plan once, then cache it."""
+    func_id = id(handler)
+    if func_id not in _plan_cache:
+        sig = _get_signature(handler)
+        type_hints = _get_type_hints_cached(handler)
+        plan: list[tuple[str, str, Any]] = []
+        for param_name, param in sig.parameters.items():
+            # Skip self and cls parameters
+            if param_name in ("self", "cls"):
+                continue
+            # Inject request object
+            if param_name == "request":
+                plan.append((param_name, "request", None))
+            # Handle Depends() marker
+            elif isinstance(param.default, Depends):
+                plan.append((param_name, "depends", param.default))
+            # Path parameter with type conversion
+            else:
+                plan.append((param_name, "path", type_hints.get(param_name)))
+        _plan_cache[func_id] = tuple(plan)
+    return _plan_cache[func_id]
+
+
 async def resolve_dependencies(
     handler: Callable[..., Any], request: Any, path_params: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -81,6 +108,9 @@ async def resolve_dependencies(
     - Async and sync dependencies
     - Per-request caching
 
+    The resolution plan is precomputed once per handler, so handlers with no
+    parameters (or only "request") skip all per-request signature work.
+
     Args:
         handler: Route handler function
         request: Request object
@@ -89,33 +119,33 @@ async def resolve_dependencies(
     Returns:
         Dictionary of resolved dependencies
     """
-    sig = _get_signature(handler)
-    type_hints = _get_type_hints_cached(handler)
+    plan = _build_resolution_plan(handler)
+    if not plan:
+        return {}
+
     kwargs: dict[str, Any] = {}
     path_params = path_params or {}
+    dep_cache: dict[str, Any] | None = None
 
-    # Initialize dependency cache on request state
-    if not hasattr(request.state, "_depends_cache"):
-        request.state._depends_cache = {}
-
-    for param_name, param in sig.parameters.items():
-        # Skip self and cls parameters
-        if param_name in ("self", "cls"):
-            continue
-
+    for param_name, kind, extra in plan:
         # Inject request object
-        if param_name == "request":
+        if kind == "request":
             kwargs[param_name] = request
             continue
 
         # Handle Depends() marker
-        if isinstance(param.default, Depends):
-            dep = param.default
+        if kind == "depends":
+            dep: Depends = extra
+            # Initialize dependency cache on request state (lazily)
+            if dep_cache is None:
+                if not hasattr(request.state, "_depends_cache"):
+                    request.state._depends_cache = {}
+                dep_cache = request.state._depends_cache
             cache_key = f"_dep_{id(dep.dependency)}"
 
             # Use cached value if available
-            if dep.use_cache and cache_key in request.state._depends_cache:
-                kwargs[param_name] = request.state._depends_cache[cache_key]
+            if dep.use_cache and cache_key in dep_cache:
+                kwargs[param_name] = dep_cache[cache_key]
             else:
                 # Resolve dependency
                 if dep.is_async:
@@ -125,7 +155,7 @@ async def resolve_dependencies(
 
                 # Cache if enabled
                 if dep.use_cache:
-                    request.state._depends_cache[cache_key] = result
+                    dep_cache[cache_key] = result
 
                 kwargs[param_name] = result
             continue
@@ -133,9 +163,7 @@ async def resolve_dependencies(
         # Inject path parameters with type conversion
         if param_name in path_params:
             raw_value = path_params[param_name]
-
-            # Get type hint for conversion
-            param_type = type_hints.get(param_name)
+            param_type = extra
 
             if param_type is not None:
                 try:
@@ -208,7 +236,7 @@ def inject(dependency: Callable[..., T]) -> T:
 # Cleanup old cache entries to prevent memory leaks
 def cleanup_caches(max_size: int = 1000) -> None:
     """Clean up signature and type hints caches"""
-    global _sig_cache, _type_hints_cache
+    global _sig_cache, _type_hints_cache, _plan_cache
 
     if len(_sig_cache) > max_size:
         # Keep most recent entries
@@ -218,3 +246,7 @@ def cleanup_caches(max_size: int = 1000) -> None:
     if len(_type_hints_cache) > max_size:
         hints_items = list(_type_hints_cache.items())
         _type_hints_cache = dict(hints_items[-max_size:])
+
+    if len(_plan_cache) > max_size:
+        plan_items = list(_plan_cache.items())
+        _plan_cache = dict(plan_items[-max_size:])
