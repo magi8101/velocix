@@ -187,7 +187,7 @@ class PasswordHasher:
             
             return result
         
-        except (ValueError, TypeError, Exception):
+        except Exception:
             if constant_time:
                 time.sleep(0.001)
             return False

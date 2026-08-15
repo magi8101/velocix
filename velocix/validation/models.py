@@ -112,7 +112,7 @@ class BaseModel(msgspec.Struct):
         """Override this method for custom validation logic"""
         pass
     
-    def dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary"""
         return {
             field: getattr(self, field)
@@ -141,7 +141,7 @@ class BaseModel(msgspec.Struct):
     
     def copy(self: T, **changes: Any) -> T:
         """Create a copy with changes"""
-        current = self.dict()
+        current = self.to_dict()
         current.update(changes)
         return self.from_dict(current)
 
