@@ -235,9 +235,7 @@ class JWTManager:
     
     def create_refresh_token(self, data: Dict[str, Any]) -> str:
         """Create refresh token"""
-        token_data = data.copy()
-        token_data["type"] = "refresh"
-        return self.encode(token_data, self._refresh_token_expire, token_type="refresh")
+        return self.encode(data, self._refresh_token_expire, token_type="refresh")
     
     def decode_token(self, token: str, verify: bool = True) -> Dict[str, Any]:
         """Decode and validate token"""

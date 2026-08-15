@@ -133,16 +133,24 @@ class Validator:
     
     def min_length(self, min_len: int, message: str | None = None) -> "Validator":
         """Check minimum length"""
-        if self._value is not None and len(self._value) < min_len:
-            msg = message or f"Must be at least {min_len} characters"
-            self._errors.append(msg)
+        if self._value is not None:
+            try:
+                if len(self._value) < min_len:
+                    msg = message or f"Must be at least {min_len} characters"
+                    self._errors.append(msg)
+            except TypeError:
+                pass
         return self
     
     def max_length(self, max_len: int, message: str | None = None) -> "Validator":
         """Check maximum length"""
-        if self._value is not None and len(self._value) > max_len:
-            msg = message or f"Must be at most {max_len} characters"
-            self._errors.append(msg)
+        if self._value is not None:
+            try:
+                if len(self._value) > max_len:
+                    msg = message or f"Must be at most {max_len} characters"
+                    self._errors.append(msg)
+            except TypeError:
+                pass
         return self
     
     def pattern(self, regex: str, message: str | None = None) -> "Validator":
@@ -170,16 +178,24 @@ class Validator:
     
     def min_value(self, min_val: int | float, message: str | None = None) -> "Validator":
         """Check minimum value"""
-        if self._value is not None and self._value < min_val:
-            msg = message or f"Must be at least {min_val}"
-            self._errors.append(msg)
+        if self._value is not None:
+            try:
+                if self._value < min_val:
+                    msg = message or f"Must be at least {min_val}"
+                    self._errors.append(msg)
+            except TypeError:
+                pass
         return self
     
     def max_value(self, max_val: int | float, message: str | None = None) -> "Validator":
         """Check maximum value"""
-        if self._value is not None and self._value > max_val:
-            msg = message or f"Must be at most {max_val}"
-            self._errors.append(msg)
+        if self._value is not None:
+            try:
+                if self._value > max_val:
+                    msg = message or f"Must be at most {max_val}"
+                    self._errors.append(msg)
+            except TypeError:
+                pass
         return self
     
     def custom(self, func: Callable[[Any], bool], message: str) -> "Validator":
@@ -251,17 +267,25 @@ class SchemaValidator:
                     "message": f"Expected type {expected_type.__name__}, got {type(value).__name__}"
                 })
         
-        if "min_length" in rules and len(value) < rules["min_length"]:
-            errors.append({
-                "field": field,
-                "message": f"Must be at least {rules['min_length']} characters"
-            })
+        if "min_length" in rules:
+            try:
+                if len(value) < rules["min_length"]:
+                    errors.append({
+                        "field": field,
+                        "message": f"Must be at least {rules['min_length']} characters"
+                    })
+            except TypeError:
+                pass
         
-        if "max_length" in rules and len(value) > rules["max_length"]:
-            errors.append({
-                "field": field,
-                "message": f"Must be at most {rules['max_length']} characters"
-            })
+        if "max_length" in rules:
+            try:
+                if len(value) > rules["max_length"]:
+                    errors.append({
+                        "field": field,
+                        "message": f"Must be at most {rules['max_length']} characters"
+                    })
+            except TypeError:
+                pass
         
         if "pattern" in rules and not re.match(rules["pattern"], str(value)):
             errors.append({
@@ -269,17 +293,25 @@ class SchemaValidator:
                 "message": f"Must match pattern {rules['pattern']}"
             })
         
-        if "min_value" in rules and value < rules["min_value"]:
-            errors.append({
-                "field": field,
-                "message": f"Must be at least {rules['min_value']}"
-            })
+        if "min_value" in rules:
+            try:
+                if value < rules["min_value"]:
+                    errors.append({
+                        "field": field,
+                        "message": f"Must be at least {rules['min_value']}"
+                    })
+            except TypeError:
+                pass
         
-        if "max_value" in rules and value > rules["max_value"]:
-            errors.append({
-                "field": field,
-                "message": f"Must be at most {rules['max_value']}"
-            })
+        if "max_value" in rules:
+            try:
+                if value > rules["max_value"]:
+                    errors.append({
+                        "field": field,
+                        "message": f"Must be at most {rules['max_value']}"
+                    })
+            except TypeError:
+                pass
         
         if "enum" in rules and value not in rules["enum"]:
             errors.append({
