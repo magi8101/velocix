@@ -1,6 +1,7 @@
 granian>=2.5.6
 orjson>=3.11.3
 httptools>=0.6.4
+fast-query-parsers>=2.0.0
 python-multipart>=0.0.9
 msgspec>=0.19.0
 argon2-cffi>=25.1.0

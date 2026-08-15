@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import orjson
+from fast_query_parsers import parse_query_string
 
 
 def cookie_parser(cookie_string: str) -> dict[str, str]:
@@ -163,10 +164,11 @@ class Request:
         """Parsed query parameters (lazy, cached)"""
         if self._query_params is None:
             if self._query_string:
-                qs = self._query_string.decode("utf-8")
-                parsed = parse_qs(qs, keep_blank_values=True)
-                # Take first value for each key (Starlette pattern)
-                self._query_params = {k: v[0] if v else "" for k, v in parsed.items()}
+                # fast-query-parsers returns ordered (key, value) pairs;
+                # iterate in reverse so the first occurrence wins (stdlib
+                # parse_qs first-value pattern)
+                pairs = parse_query_string(self._query_string, "&")
+                self._query_params = {k: v for k, v in reversed(pairs)}
             else:
                 self._query_params = {}
         return self._query_params
