@@ -1,49 +1,48 @@
 """Validation utilities with comprehensive error handling"""
-import msgspec
-from typing import Any, TypeVar, Callable, Type, Union, get_origin, get_args
-from collections.abc import Mapping, Sequence
+
 import re
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+import msgspec
 
 T = TypeVar("T")
 
 
 class ValidationContext:
     """Context for validation with error accumulation"""
-    
+
     __slots__ = ("_errors", "_path")
-    
+
     def __init__(self) -> None:
         self._errors: list[dict[str, Any]] = []
         self._path: list[str] = []
-    
+
     def add_error(self, field: str, message: str, value: Any = None) -> None:
         """Add validation error"""
         path = ".".join(self._path + [field]) if self._path else field
-        error = {
-            "field": path,
-            "message": message
-        }
+        error = {"field": path, "message": message}
         if value is not None:
             error["value"] = value
         self._errors.append(error)
-    
+
     def push_path(self, segment: str) -> None:
         """Push path segment for nested validation"""
         self._path.append(segment)
-    
+
     def pop_path(self) -> None:
         """Pop path segment"""
         if self._path:
             self._path.pop()
-    
+
     def has_errors(self) -> bool:
         """Check if any errors exist"""
         return len(self._errors) > 0
-    
+
     def get_errors(self) -> list[dict[str, Any]]:
         """Get all validation errors"""
         return self._errors.copy()
-    
+
     def clear(self) -> None:
         """Clear all errors"""
         self._errors.clear()
@@ -54,13 +53,13 @@ def validate_json(data: bytes | str, model: type[T], strict: bool = True) -> T:
     """Validate and parse JSON with msgspec"""
     if isinstance(data, str):
         data = data.encode("utf-8")
-    
+
     try:
         return msgspec.json.decode(data, type=model, strict=strict)
     except msgspec.ValidationError as e:
-        raise ValueError(f"JSON validation failed: {str(e)}")
+        raise ValueError(f"JSON validation failed: {str(e)}") from e
     except msgspec.DecodeError as e:
-        raise ValueError(f"JSON decode failed: {str(e)}")
+        raise ValueError(f"JSON decode failed: {str(e)}") from e
 
 
 def validate_query(params: dict[str, str | list[str]], model: type[T]) -> T:
@@ -72,10 +71,10 @@ def validate_query(params: dict[str, str | list[str]], model: type[T]) -> T:
                 cleaned[key] = value[0] if len(value) == 1 else value
             else:
                 cleaned[key] = value
-        
+
         return msgspec.convert(cleaned, type=model, strict=False)
     except msgspec.ValidationError as e:
-        raise ValueError(f"Query parameter validation failed: {str(e)}")
+        raise ValueError(f"Query parameter validation failed: {str(e)}") from e
 
 
 def validate_form(data: dict[str, Any], model: type[T]) -> T:
@@ -83,7 +82,7 @@ def validate_form(data: dict[str, Any], model: type[T]) -> T:
     try:
         return msgspec.convert(data, type=model, strict=False)
     except msgspec.ValidationError as e:
-        raise ValueError(f"Form validation failed: {str(e)}")
+        raise ValueError(f"Form validation failed: {str(e)}") from e
 
 
 def to_json(obj: Any, indent: int | None = None) -> bytes:
@@ -93,12 +92,12 @@ def to_json(obj: Any, indent: int | None = None) -> bytes:
             return msgspec.json.format(msgspec.json.encode(obj), indent=indent)
         return msgspec.json.encode(obj)
     except Exception as e:
-        raise ValueError(f"JSON serialization failed: {str(e)}")
+        raise ValueError(f"JSON serialization failed: {str(e)}") from e
 
 
 def to_json_str(obj: Any, indent: int | None = None) -> str:
     """Serialize object to JSON string"""
-    return to_json(obj, indent=indent).decode('utf-8')
+    return to_json(obj, indent=indent).decode("utf-8")
 
 
 def to_dict(obj: Any) -> dict[str, Any]:
@@ -112,25 +111,25 @@ def from_dict(data: dict[str, Any], model: type[T]) -> T:
     try:
         return msgspec.convert(data, type=model)
     except msgspec.ValidationError as e:
-        raise ValueError(f"Dictionary conversion failed: {str(e)}")
+        raise ValueError(f"Dictionary conversion failed: {str(e)}") from e
 
 
 class Validator:
     """Functional validator with chaining"""
-    
+
     __slots__ = ("_value", "_field_name", "_errors")
-    
+
     def __init__(self, value: Any, field_name: str = "value") -> None:
         self._value = value
         self._field_name = field_name
         self._errors: list[str] = []
-    
+
     def required(self, message: str = "Field is required") -> "Validator":
         """Check if value is not None"""
         if self._value is None:
             self._errors.append(message)
         return self
-    
+
     def min_length(self, min_len: int, message: str | None = None) -> "Validator":
         """Check minimum length"""
         if self._value is not None:
@@ -141,7 +140,7 @@ class Validator:
             except TypeError:
                 pass
         return self
-    
+
     def max_length(self, max_len: int, message: str | None = None) -> "Validator":
         """Check maximum length"""
         if self._value is not None:
@@ -152,30 +151,30 @@ class Validator:
             except TypeError:
                 pass
         return self
-    
+
     def pattern(self, regex: str, message: str | None = None) -> "Validator":
         """Check regex pattern"""
         if self._value is not None and not re.match(regex, str(self._value)):
             msg = message or f"Must match pattern {regex}"
             self._errors.append(msg)
         return self
-    
+
     def email(self, message: str = "Invalid email format") -> "Validator":
         """Validate email"""
         if self._value is not None:
-            pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
             if not re.match(pattern, str(self._value)):
                 self._errors.append(message)
         return self
-    
+
     def url(self, message: str = "Invalid URL format") -> "Validator":
         """Validate URL"""
         if self._value is not None:
-            pattern = r'^https?://[^\s/$.?#].[^\s]*$'
+            pattern = r"^https?://[^\s/$.?#].[^\s]*$"
             if not re.match(pattern, str(self._value)):
                 self._errors.append(message)
         return self
-    
+
     def min_value(self, min_val: int | float, message: str | None = None) -> "Validator":
         """Check minimum value"""
         if self._value is not None:
@@ -186,7 +185,7 @@ class Validator:
             except TypeError:
                 pass
         return self
-    
+
     def max_value(self, max_val: int | float, message: str | None = None) -> "Validator":
         """Check maximum value"""
         if self._value is not None:
@@ -197,7 +196,7 @@ class Validator:
             except TypeError:
                 pass
         return self
-    
+
     def custom(self, func: Callable[[Any], bool], message: str) -> "Validator":
         """Custom validation function"""
         if self._value is not None:
@@ -207,15 +206,15 @@ class Validator:
             except Exception:
                 self._errors.append(message)
         return self
-    
+
     def is_valid(self) -> bool:
         """Check if validation passed"""
         return len(self._errors) == 0
-    
+
     def get_errors(self) -> list[str]:
         """Get validation errors"""
         return self._errors.copy()
-    
+
     def raise_if_invalid(self) -> Any:
         """Raise ValueError if validation failed, otherwise return value"""
         if not self.is_valid():
@@ -231,92 +230,92 @@ def validate_field(value: Any, field_name: str = "value") -> Validator:
 
 class SchemaValidator:
     """Schema-based validation for complex objects"""
-    
+
     __slots__ = ("_schema",)
-    
+
     def __init__(self, schema: dict[str, Any]) -> None:
         self._schema = schema
-    
+
     def validate(self, data: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
         """Validate data against schema"""
         errors: list[dict[str, Any]] = []
-        
+
         for field, rules in self._schema.items():
             value = data.get(field)
             field_errors = self._validate_field(field, value, rules)
             errors.extend(field_errors)
-        
+
         return len(errors) == 0, errors
-    
-    def _validate_field(self, field: str, value: Any, rules: dict[str, Any]) -> list[dict[str, Any]]:
+
+    def _validate_field(
+        self, field: str, value: Any, rules: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Validate single field"""
         errors: list[dict[str, Any]] = []
-        
+
         if rules.get("required", False) and value is None:
             errors.append({"field": field, "message": "Field is required"})
             return errors
-        
+
         if value is None:
             return errors
-        
+
         if "type" in rules:
             expected_type = rules["type"]
             if not isinstance(value, expected_type):
-                errors.append({
-                    "field": field,
-                    "message": f"Expected type {expected_type.__name__}, got {type(value).__name__}"
-                })
-        
+                errors.append(
+                    {
+                        "field": field,
+                        "message": f"Expected type {expected_type.__name__}, got {type(value).__name__}",
+                    }
+                )
+
         if "min_length" in rules:
             try:
                 if len(value) < rules["min_length"]:
-                    errors.append({
-                        "field": field,
-                        "message": f"Must be at least {rules['min_length']} characters"
-                    })
+                    errors.append(
+                        {
+                            "field": field,
+                            "message": f"Must be at least {rules['min_length']} characters",
+                        }
+                    )
             except TypeError:
                 pass
-        
+
         if "max_length" in rules:
             try:
                 if len(value) > rules["max_length"]:
-                    errors.append({
-                        "field": field,
-                        "message": f"Must be at most {rules['max_length']} characters"
-                    })
+                    errors.append(
+                        {
+                            "field": field,
+                            "message": f"Must be at most {rules['max_length']} characters",
+                        }
+                    )
             except TypeError:
                 pass
-        
+
         if "pattern" in rules and not re.match(rules["pattern"], str(value)):
-            errors.append({
-                "field": field,
-                "message": f"Must match pattern {rules['pattern']}"
-            })
-        
+            errors.append({"field": field, "message": f"Must match pattern {rules['pattern']}"})
+
         if "min_value" in rules:
             try:
                 if value < rules["min_value"]:
-                    errors.append({
-                        "field": field,
-                        "message": f"Must be at least {rules['min_value']}"
-                    })
+                    errors.append(
+                        {"field": field, "message": f"Must be at least {rules['min_value']}"}
+                    )
             except TypeError:
                 pass
-        
+
         if "max_value" in rules:
             try:
                 if value > rules["max_value"]:
-                    errors.append({
-                        "field": field,
-                        "message": f"Must be at most {rules['max_value']}"
-                    })
+                    errors.append(
+                        {"field": field, "message": f"Must be at most {rules['max_value']}"}
+                    )
             except TypeError:
                 pass
-        
+
         if "enum" in rules and value not in rules["enum"]:
-            errors.append({
-                "field": field,
-                "message": f"Must be one of {rules['enum']}"
-            })
-        
+            errors.append({"field": field, "message": f"Must be one of {rules['enum']}"})
+
         return errors

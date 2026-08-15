@@ -1,10 +1,13 @@
 """
 Request object with lazy parsing and cached properties - Starlette-inspired optimizations
 """
-import orjson
-from typing import Any, Optional, AsyncIterator
-from urllib.parse import parse_qs, unquote_plus
+
+from collections.abc import AsyncIterator
 from http import cookies as http_cookies
+from typing import Any
+from urllib.parse import parse_qs
+
+import orjson
 
 
 def cookie_parser(cookie_string: str) -> dict[str, str]:
@@ -26,12 +29,13 @@ def cookie_parser(cookie_string: str) -> dict[str, str]:
 
 class ClientDisconnect(Exception):
     """Raised when client disconnects during request"""
+
     pass
 
 
 class Request:
     """HTTP Request with lazy parsing and property caching"""
-    
+
     __slots__ = (
         "scope",
         "_receive",
@@ -51,16 +55,16 @@ class Request:
         "_headers",
         "_query_string",
         "_stream_consumed",
-        "_is_disconnected"
+        "_is_disconnected",
     )
-    
+
     def __init__(self, scope: dict[str, Any], receive: Any, send: Any = None) -> None:
         assert scope["type"] == "http", "Request scope must be 'http'"
-        
+
         self.scope = scope
         self._receive = receive
         self._send = send
-        
+
         # Lazy-loaded properties (Starlette pattern)
         self._body: bytes | None = None
         self._json: Any = None
@@ -68,49 +72,49 @@ class Request:
         self._query_params: dict[str, str] | None = None
         self._cookies: dict[str, str] | None = None
         self._headers: dict[bytes, bytes] | None = None
-        self._url: Optional[str] = None
-        self._base_url: Optional[str] = None
-        
+        self._url: str | None = None
+        self._base_url: str | None = None
+
         # Path parameters set by router
         self.path_params: dict[str, str] = scope.get("path_params", {})
-        
+
         # State object for middleware
         self.state: Any = type("State", (), {})()
-        
+
         # Owning application (set by the ASGI app)
         self.app: Any = None
-        
+
         # Pre-cache frequently accessed immutable properties
         self._method: str = scope["method"]
         self._path: str = scope["path"]
         self._query_string: bytes = scope.get("query_string", b"")
-        
+
         # Stream state tracking
         self._stream_consumed: bool = False
         self._is_disconnected: bool = False
-    
+
     @property
     def method(self) -> str:
         """HTTP method (cached)"""
         return self._method
-    
+
     @property
     def path(self) -> str:
         """Request path (cached)"""
         return self._path
-    
+
     @property
     def headers(self) -> dict[bytes, bytes]:
         """Request headers (cached)"""
         if self._headers is None:
             self._headers = dict(self.scope.get("headers", []))
         return self._headers
-    
+
     @property
     def query_string(self) -> bytes:
         """Raw query string (cached)"""
         return self._query_string
-    
+
     @property
     def url(self) -> str:
         """Full request URL (lazy, cached)"""
@@ -119,7 +123,7 @@ class Request:
             server = self.scope.get("server")
             path = self._path
             query = self._query_string.decode("latin-1")
-            
+
             if server:
                 host, port = server
                 default_port = {"http": 80, "https": 443}[scheme]
@@ -129,19 +133,19 @@ class Request:
                     self._url = f"{scheme}://{host}:{port}{path}"
             else:
                 self._url = path
-            
+
             if query:
                 self._url += f"?{query}"
-        
+
         return self._url
-    
+
     @property
     def base_url(self) -> str:
         """Base URL without path/query (lazy, cached)"""
         if self._base_url is None:
             scheme = self.scope.get("scheme", "http")
             server = self.scope.get("server")
-            
+
             if server:
                 host, port = server
                 default_port = {"http": 80, "https": 443}[scheme]
@@ -151,9 +155,9 @@ class Request:
                     self._base_url = f"{scheme}://{host}:{port}"
             else:
                 self._base_url = ""
-        
+
         return self._base_url
-    
+
     @property
     def query_params(self) -> dict[str, str]:
         """Parsed query parameters (lazy, cached)"""
@@ -166,7 +170,7 @@ class Request:
             else:
                 self._query_params = {}
         return self._query_params
-    
+
     @property
     def cookies(self) -> dict[str, str]:
         """Parsed cookies (lazy, cached)"""
@@ -180,12 +184,12 @@ class Request:
                     # Malformed cookies, return empty dict
                     pass
         return self._cookies
-    
+
     @property
-    def client(self) -> Optional[tuple[str, int]]:
+    def client(self) -> tuple[str, int] | None:
         """Client address (host, port) or None"""
         return self.scope.get("client")
-    
+
     async def stream(self) -> AsyncIterator[bytes]:
         """
         Stream request body in chunks (Starlette pattern).
@@ -195,13 +199,13 @@ class Request:
             yield self._body
             yield b""
             return
-        
+
         if self._stream_consumed:
             raise RuntimeError("Stream already consumed")
-        
+
         while not self._stream_consumed:
             message = await self._receive()
-            
+
             if message["type"] == "http.request":
                 body_chunk = message.get("body", b"")
                 if not message.get("more_body", False):
@@ -211,9 +215,9 @@ class Request:
             elif message["type"] == "http.disconnect":
                 self._is_disconnected = True
                 raise ClientDisconnect()
-        
+
         yield b""
-    
+
     async def body(self) -> bytes:
         """
         Request body (cached after first read).
@@ -225,7 +229,7 @@ class Request:
                 chunks.append(chunk)
             self._body = b"".join(chunks)
         return self._body
-    
+
     async def json(self) -> Any:
         """
         Parse JSON body (cached, uses orjson for speed).
@@ -238,7 +242,7 @@ class Request:
             else:
                 self._json = None
         return self._json
-    
+
     async def form(self) -> dict[str, Any]:
         """
         Parse form data (application/x-www-form-urlencoded).
@@ -252,18 +256,18 @@ class Request:
             else:
                 self._form = {}
         return self._form
-    
+
     async def is_disconnected(self) -> bool:
         """Check if client has disconnected (non-blocking)"""
         return self._is_disconnected
-    
+
     def __repr__(self) -> str:
         return f"Request(method={self._method!r}, path={self._path!r})"
-    
+
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to scope (Starlette compatibility)"""
         return self.scope[key]
-    
+
     def __contains__(self, key: str) -> bool:
         """Check if key exists in scope"""
         return key in self.scope

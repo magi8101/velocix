@@ -1,9 +1,12 @@
 """OpenAPI specification generator"""
+
 import json
-from typing import Any, Dict, List, Optional, Union, Callable
 from pathlib import Path
-from .models import OpenAPISpec, PathItem, Operation, Info, Server, Tag as TagModel, SecurityScheme, Response
-from .decorators import get_operation_for_function, _route_operations
+from typing import Any
+
+from .decorators import get_operation_for_function
+from .models import Info, OpenAPISpec, PathItem, SecurityScheme, Server
+from .models import Tag as TagModel
 
 try:
     import yaml
@@ -13,55 +16,52 @@ except ImportError:
 
 class OpenAPIGenerator:
     """Generate OpenAPI specifications from decorated routes"""
-    
+
     def __init__(
         self,
         title: str,
         version: str = "1.0.0",
-        description: Optional[str] = None,
-        servers: Optional[List[Dict[str, Any]]] = None
+        description: str | None = None,
+        servers: list[dict[str, Any]] | None = None,
     ):
         self.title = title
         self.version = version
         self.description = description
         self.servers = servers or [{"url": "/", "description": "Default server"}]
-        self.security_schemes: Dict[str, SecurityScheme] = {}
-        self.global_tags: List[TagModel] = []
-    
+        self.security_schemes: dict[str, SecurityScheme] = {}
+        self.global_tags: list[TagModel] = []
+
     def add_security_scheme(
         self,
         name: str,
         type_: str,
-        scheme: Optional[str] = None,
-        bearer_format: Optional[str] = None,
-        description: Optional[str] = None
+        scheme: str | None = None,
+        bearer_format: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Add a security scheme"""
         self.security_schemes[name] = SecurityScheme(
-            type=type_,
-            scheme=scheme,
-            bearer_format=bearer_format,
-            description=description
+            type=type_, scheme=scheme, bearer_format=bearer_format, description=description
         )
-    
-    def add_tag(self, name: str, description: Optional[str] = None) -> None:
+
+    def add_tag(self, name: str, description: str | None = None) -> None:
         """Add a global tag"""
         tag = TagModel(name=name, description=description)
         if tag not in self.global_tags:
             self.global_tags.append(tag)
-    
+
     def generate_from_router(self, router: Any) -> OpenAPISpec:
         """Generate OpenAPI spec from a Velocix router"""
-        paths: Dict[str, PathItem] = {}
-        
+        paths: dict[str, PathItem] = {}
+
         # Extract static routes
-        if hasattr(router, 'static_routes'):
+        if hasattr(router, "static_routes"):
             for method, routes in router.static_routes.items():
                 for path, handler in routes.items():
                     self._add_path_from_handler(paths, path, method.lower(), handler)
-        
+
         # Extract dynamic routes
-        if hasattr(router, 'dynamic_patterns'):
+        if hasattr(router, "dynamic_patterns"):
             for pattern_tuple in router.dynamic_patterns:
                 # pattern_tuple format: (method, path_pattern, handler, params, ...)
                 if len(pattern_tuple) >= 3:
@@ -69,81 +69,82 @@ class OpenAPIGenerator:
                     path = pattern_tuple[1]
                     handler = pattern_tuple[2]
                     self._add_path_from_handler(paths, path, method.lower(), handler)
-        
+
         # Also check route_cache for any additional routes
-        if hasattr(router, 'route_cache'):
+        if hasattr(router, "route_cache"):
             for cache_key, cached_route in router.route_cache.items():
-                if ':' in cache_key:
-                    method, path = cache_key.split(':', 1)
+                if ":" in cache_key:
+                    method, path = cache_key.split(":", 1)
                     handler = cached_route.handler
                     self._add_path_from_handler(paths, path, method.lower(), handler)
-        
+
         return OpenAPISpec(
             openapi="3.1.0",
-            info=Info(
-                title=self.title,
-                version=self.version,
-                description=self.description
-            ),
+            info=Info(title=self.title, version=self.version, description=self.description),
             servers=[Server(**server) for server in self.servers],
             paths=paths,
             components={
-                'securitySchemes': {
+                "securitySchemes": {
                     name: scheme.to_dict() for name, scheme in self.security_schemes.items()
                 }
-            } if self.security_schemes else None,
-            tags=self.global_tags
+            }
+            if self.security_schemes
+            else None,
+            tags=self.global_tags,
         )
-    
-    def _add_path_from_handler(self, paths: Dict[str, PathItem], path: str, method: str, handler: Any) -> None:
+
+    def _add_path_from_handler(
+        self, paths: dict[str, PathItem], path: str, method: str, handler: Any
+    ) -> None:
         """Add a path to the paths dict from handler info"""
         if not handler or not path:
             return
-        
+
         # Get operation from handler or create default
         operation = get_operation_for_function(handler)
         if not operation:
             # Auto-generate operation from function
             from .auto_docs import generate_operation_from_function
+
             operation = generate_operation_from_function(handler, path, method.upper())
-        
+
         # Ensure path exists
         if path not in paths:
             paths[path] = PathItem()
-        
+
         # Set operation for method
         setattr(paths[path], method, operation)
-    
-    def _extract_path_from_key(self, key: str) -> Optional[str]:
+
+    def _extract_path_from_key(self, key: str) -> str | None:
         """Extract path from operation key (simplified)"""
         # This is a placeholder - in real implementation,
         # you'd need to map function names to actual paths
-        parts = key.split('.')
+        parts = key.split(".")
         if len(parts) >= 2:
             return f"/{parts[-1]}"
         return None
-    
-    def to_dict(self, router: Any) -> Dict[str, Any]:
+
+    def to_dict(self, router: Any) -> dict[str, Any]:
         """Convert to dictionary"""
         spec = self.generate_from_router(router)
         return spec.to_dict()
-    
+
     def to_json(self, router: Any, indent: int = 2) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict(router), indent=indent)
-    
+
     def to_yaml(self, router: Any) -> str:
         """Convert to YAML string"""
         if yaml is None:
             raise ImportError("PyYAML is required for YAML export")
-        return yaml.dump(self.to_dict(router), default_flow_style=False)
-    
-    def save_json(self, router: Any, file_path: Union[str, Path], indent: int = 2) -> None:
+        return str(yaml.dump(self.to_dict(router), default_flow_style=False))
+
+    def save_json(self, router: Any, file_path: str | Path, indent: int = 2) -> None:
         """Save as JSON file"""
         path = Path(file_path)
         path.write_text(self.to_json(router, indent))
-    
-    def save_yaml(self, router: Any, file_path: Union[str, Path]) -> None:
+
+    def save_yaml(self, router: Any, file_path: str | Path) -> None:
         """Save as YAML file"""
         path = Path(file_path)
         path.write_text(self.to_yaml(router))
@@ -151,19 +152,19 @@ class OpenAPIGenerator:
 
 class SwaggerUIHandler:
     """Serve Swagger UI for OpenAPI documentation"""
-    
+
     def __init__(
         self,
         openapi_url: str = "/openapi.json",
         title: str = "API Documentation",
         swagger_js_url: str = "https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
-        swagger_css_url: str = "https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css"
+        swagger_css_url: str = "https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css",
     ):
         self.openapi_url = openapi_url
         self.title = title
         self.swagger_js_url = swagger_js_url
         self.swagger_css_url = swagger_css_url
-    
+
     def get_html(self) -> str:
         """Generate Swagger UI HTML"""
         return f"""
@@ -214,17 +215,17 @@ class SwaggerUIHandler:
 
 class ReDocHandler:
     """Serve ReDoc for OpenAPI documentation"""
-    
+
     def __init__(
         self,
         openapi_url: str = "/openapi.json",
         title: str = "API Documentation",
-        redoc_js_url: str = "https://unpkg.com/redoc@2.1.3/bundles/redoc.standalone.js"
+        redoc_js_url: str = "https://unpkg.com/redoc@2.1.3/bundles/redoc.standalone.js",
     ):
         self.openapi_url = openapi_url
         self.title = title
         self.redoc_js_url = redoc_js_url
-    
+
     def get_html(self) -> str:
         """Generate ReDoc HTML"""
         return f"""
@@ -252,41 +253,35 @@ class ReDocHandler:
 
 # Convenience functions for quick setup
 def create_openapi_generator(
-    title: str,
-    version: str = "1.0.0",
-    description: Optional[str] = None
+    title: str, version: str = "1.0.0", description: str | None = None
 ) -> OpenAPIGenerator:
     """Create an OpenAPI generator with common defaults"""
-    return OpenAPIGenerator(
-        title=title,
-        version=version,
-        description=description
-    )
+    return OpenAPIGenerator(title=title, version=version, description=description)
 
 
 def setup_docs_routes(router: Any, generator: OpenAPIGenerator) -> None:
     """Set up documentation routes on a router"""
     swagger_handler = SwaggerUIHandler()
     redoc_handler = ReDocHandler()
-    
+
     # Add OpenAPI JSON endpoint
-    def openapi_json() -> Dict[str, Any]:
+    def openapi_json() -> dict[str, Any]:
         return generator.to_dict(router)
-    
+
     # Add Swagger UI endpoint
     def swagger_ui() -> str:
         return swagger_handler.get_html()
-    
+
     # Add ReDoc endpoint
     def redoc_ui() -> str:
         return redoc_handler.get_html()
-    
+
     # Register routes (this depends on your router implementation)
-    if hasattr(router, 'get'):
-        router.get('/openapi.json', openapi_json)
-        router.get('/docs', swagger_ui)
-        router.get('/redoc', redoc_ui)
-    elif hasattr(router, 'route'):
-        router.route('/openapi.json', ['GET'], openapi_json)
-        router.route('/docs', ['GET'], swagger_ui)
-        router.route('/redoc', ['GET'], redoc_ui)
+    if hasattr(router, "get"):
+        router.get("/openapi.json", openapi_json)
+        router.get("/docs", swagger_ui)
+        router.get("/redoc", redoc_ui)
+    elif hasattr(router, "route"):
+        router.route("/openapi.json", ["GET"], openapi_json)
+        router.route("/docs", ["GET"], swagger_ui)
+        router.route("/redoc", ["GET"], redoc_ui)

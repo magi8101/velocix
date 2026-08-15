@@ -1,49 +1,111 @@
 """OpenAPI support for Velocix"""
-from .models import (
-    OpenAPISpec, Info, Server, PathItem, Operation,
-    Parameter, Response, Schema, Tag, SecurityScheme,
-    ParameterIn, SchemaType
+
+from .auto_docs import (
+    AutoDocRouter,
+    auto_document_function,
+    create_auto_router,
+    enable_auto_docs,
+    generate_operation_from_function,
 )
 from .decorators import (
-    operation, parameter, response, tag, request_body, security,
-    get_operation_for_function, clear_operations, string_schema, integer_schema,
-    array_schema, object_schema
-)
-from .generator import (
-    OpenAPIGenerator, SwaggerUIHandler, ReDocHandler,
-    create_openapi_generator, setup_docs_routes
+    array_schema,
+    clear_operations,
+    get_operation_for_function,
+    integer_schema,
+    object_schema,
+    operation,
+    parameter,
+    request_body,
+    response,
+    security,
+    string_schema,
+    tag,
 )
 from .decorators_style import (
-    get, post, put, delete, Path, Query, Body, responses, tags,
-    VelocixStyleDocs, create_docs
+    Body,
+    Path,
+    Query,
+    VelocixStyleDocs,
+    create_docs,
+    delete,
+    get,
+    post,
+    put,
+    responses,
+    tags,
 )
-from .auto_docs import (
-    AutoDocRouter, enable_auto_docs, create_auto_router,
-    auto_document_function, generate_operation_from_function
+from .generator import (
+    OpenAPIGenerator,
+    ReDocHandler,
+    SwaggerUIHandler,
+    create_openapi_generator,
+    setup_docs_routes,
+)
+from .models import (
+    Info,
+    OpenAPISpec,
+    Operation,
+    Parameter,
+    ParameterIn,
+    PathItem,
+    Response,
+    Schema,
+    SchemaType,
+    SecurityScheme,
+    Server,
+    Tag,
 )
 
 __all__ = [
     # Models
-    'OpenAPISpec', 'Info', 'Server', 'PathItem', 'Operation',
-    'Parameter', 'Response', 'Schema', 'Tag', 'SecurityScheme',
-    'ParameterIn', 'SchemaType',
-    
+    "OpenAPISpec",
+    "Info",
+    "Server",
+    "PathItem",
+    "Operation",
+    "Parameter",
+    "Response",
+    "Schema",
+    "Tag",
+    "SecurityScheme",
+    "ParameterIn",
+    "SchemaType",
     # Decorators (low-level)
-    'operation', 'parameter', 'response', 'tag', 'request_body', 'security',
-    'get_operation_for_function', 'clear_operations',
-    
+    "operation",
+    "parameter",
+    "response",
+    "tag",
+    "request_body",
+    "security",
+    "get_operation_for_function",
+    "clear_operations",
     # Schema helpers
-    'string_schema', 'integer_schema', 'array_schema', 'object_schema',
-    
+    "string_schema",
+    "integer_schema",
+    "array_schema",
+    "object_schema",
     # Generator
-    'OpenAPIGenerator', 'SwaggerUIHandler', 'ReDocHandler',
-    'create_openapi_generator', 'setup_docs_routes',
-    
+    "OpenAPIGenerator",
+    "SwaggerUIHandler",
+    "ReDocHandler",
+    "create_openapi_generator",
+    "setup_docs_routes",
     # Velocix-style (recommended)
-    'get', 'post', 'put', 'delete', 'Path', 'Query', 'Body', 'responses', 'tags',
-    'VelocixStyleDocs', 'create_docs',
-    
+    "get",
+    "post",
+    "put",
+    "delete",
+    "Path",
+    "Query",
+    "Body",
+    "responses",
+    "tags",
+    "VelocixStyleDocs",
+    "create_docs",
     # Auto-documentation (zero decorators!)
-    'AutoDocRouter', 'enable_auto_docs', 'create_auto_router',
-    'auto_document_function', 'generate_operation_from_function'
+    "AutoDocRouter",
+    "enable_auto_docs",
+    "create_auto_router",
+    "auto_document_function",
+    "generate_operation_from_function",
 ]
