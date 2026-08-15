@@ -32,7 +32,7 @@ __features__ = [
 
 from functools import partial
 
-from velocix.core.app import Velocix
+from velocix.core.app import Velocix, cache_response
 from velocix.core.depends import Depends
 from velocix.core.exceptions import HTTPException
 from velocix.core.middleware import BaseMiddleware
@@ -117,6 +117,7 @@ def create_app(
 __all__ = [
     # Core
     "Velocix",
+    "cache_response",
     "Request",
     "Response",
     "JSONResponse",

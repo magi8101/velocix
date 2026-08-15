@@ -4,6 +4,7 @@ ASGI application with lifespan management
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
@@ -26,6 +27,29 @@ class State:
     pass
 
 
+def cache_response(ttl: float = 60.0) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """
+    Cache a route's serialized JSON response body for `ttl` seconds.
+
+    The cached value is the orjson-serialized body (the most expensive part
+    of a JSON response), keyed by method + path + query string. Only safe for
+    handlers whose output does not depend on per-request state (auth, headers,
+    cookies); opt-in per route.
+
+    Usage:
+        @app.get("/items")
+        @cache_response(ttl=60)
+        async def items(request):
+            return {"items": ITEMS}
+    """
+
+    def decorator(handler: Callable[..., Any]) -> Callable[..., Any]:
+        handler.__response_cache_ttl__ = ttl  # type: ignore[attr-defined]
+        return handler
+
+    return decorator
+
+
 class Velocix:
     """Main ASGI application with cached middleware compilation"""
 
@@ -40,6 +64,7 @@ class Velocix:
         "_background_tasks",
         "_compiled_middleware",
         "_startup_complete",
+        "_response_cache",
     )
 
     def __init__(self, debug: bool = False) -> None:
@@ -52,6 +77,7 @@ class Velocix:
         self._background_tasks: set[Any] = set()
         self._compiled_middleware: Any = None
         self._startup_complete: bool = False
+        self._response_cache: dict[str, tuple[float, bytes, int]] = {}
         self._error_handler = ErrorHandler(debug=debug)
 
         self._setup_default_exception_handlers()
@@ -256,20 +282,38 @@ class Velocix:
             if handler is None:
                 raise NotFound()
 
+        # Response cache hit: reuse the serialized body, skip handler + orjson
+        cache_ttl = getattr(handler, "__response_cache_ttl__", None)
+        if cache_ttl is not None:
+            cache_key = f"{request.method}:{request.path}?{request.query_string.decode('latin-1')}"
+            cached = self._response_cache.get(cache_key)
+            if cached is not None and cached[0] > time.time():
+                return JSONResponse.from_body(cached[1], cached[2])
+
         kwargs = await resolve_dependencies(handler, request, request.path_params)
 
         result = await handler(**kwargs)
 
         if isinstance(result, (Response, JSONResponse, StreamingResponse)):
-            return result
+            response: ResponseType = result
         elif isinstance(result, dict):
-            return JSONResponse(result)
+            response = JSONResponse(result)
         elif isinstance(result, str):
-            return Response(result, media_type="text/plain")
+            response = Response(result, media_type="text/plain")
         elif result is None:
-            return Response(b"", status_code=204)
+            response = Response(b"", status_code=204)
         else:
-            return JSONResponse(result)
+            response = JSONResponse(result)
+
+        # Cache the serialized body only for dict/JSON responses
+        if cache_ttl is not None and isinstance(response, JSONResponse):
+            self._response_cache[cache_key] = (
+                time.time() + cache_ttl,
+                bytes(response.body),
+                response.status_code,
+            )
+
+        return response
 
     async def _handle_exception(self, request: Request, exc: Exception) -> ResponseType:
         """Handle exceptions with registered handlers"""
