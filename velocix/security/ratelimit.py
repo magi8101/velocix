@@ -137,19 +137,21 @@ class ProductionRateLimiter:
 class RateLimitMiddleware(BaseMiddleware):
     """Production rate limiter middleware with multiple algorithms"""
     
-    __slots__ = ("app", "_limiter", "_key_func", "_error_handler")
+    __slots__ = ("app", "_limiter", "_key_func", "_error_handler", "_trusted_proxies")
     
     def __init__(
         self,
         app: Any,
         limiter: ProductionRateLimiter | None = None,
         key_func: Any | None = None,
-        error_handler: Any | None = None
+        error_handler: Any | None = None,
+        trusted_proxies: set[str] | None = None
     ) -> None:
         super().__init__(app)
         self._limiter = limiter or ProductionRateLimiter()
         self._key_func = key_func or self._default_key_func
         self._error_handler = error_handler or self._default_error_handler
+        self._trusted_proxies = trusted_proxies or {"127.0.0.1", "::1"}
     
     async def __call__(self, request: Any) -> Any:
         """Check rate limit before processing request"""
@@ -166,21 +168,24 @@ class RateLimitMiddleware(BaseMiddleware):
     
     def _default_key_func(self, request: Any) -> str:
         """Default key function based on client IP"""
-        headers = getattr(request, 'headers', {})
-        
-        if isinstance(headers, dict):
-            forwarded_for = headers.get(b'x-forwarded-for', b'').decode()
-            real_ip = headers.get(b'x-real-ip', b'').decode()
-            
-            if forwarded_for:
-                return str(forwarded_for.split(',')[0].strip())
-            if real_ip:
-                return str(real_ip)
-        
         scope = getattr(request, 'scope', {})
         client = scope.get('client')
-        if client and len(client) >= 1:
-            return str(client[0])
+        peer_ip = client[0] if client and len(client) >= 1 else None
+        
+        headers = getattr(request, 'headers', {})
+        
+        # Only trust forwarded headers from known proxies, otherwise the
+        # client can spoof the key and bypass (or DoS) the rate limit.
+        if isinstance(headers, dict) and peer_ip in self._trusted_proxies:
+            forwarded_for = headers.get(b'x-forwarded-for', b'').decode('latin-1')
+            if forwarded_for:
+                return str(forwarded_for.split(',')[-1].strip())
+            real_ip = headers.get(b'x-real-ip', b'').decode('latin-1')
+            if real_ip:
+                return str(real_ip.strip())
+        
+        if peer_ip:
+            return str(peer_ip)
         
         return "unknown"
     
