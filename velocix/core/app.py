@@ -8,11 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from velocix.core.depends import (
-    get_plan_and_needs_request,
-    get_resolution_plan,
-    resolve_dependencies,
-)
+from velocix.core.depends import get_plan_and_needs_request, resolve_dependencies
 from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
 from velocix.core.request import Request
@@ -262,18 +258,17 @@ class Velocix:
         """Process HTTP request with error handling and middleware"""
         request: Request | None = None
         try:
-            if self._compiled_middleware is None:
-                self._compiled_middleware = build_middleware_stack(
-                    self._execute_handler, self._middleware_stack
-                )
+            if self._middleware_stack:
+                if self._compiled_middleware is None:
+                    self._compiled_middleware = build_middleware_stack(
+                        self._execute_handler, self._middleware_stack
+                    )
 
-            # One plan lookup per request: used for the needs-request decision,
-            # stashed on the Request for the middleware path, and passed straight
-            # to _execute_handler on the no-Request fast path.
-            plan, needs_request = get_plan_and_needs_request(handler)
-            if self._middleware_stack or needs_request:
+                # One plan lookup per request, stashed on the Request so the
+                # middleware terminal re-reads it without another lookup.
+                entry = get_plan_and_needs_request(handler)
                 request = self._init_request(scope, receive, handler, path_params)
-                request._plan = plan
+                request._plan = entry
                 response = await self._compiled_middleware(request)
                 # Middleware should return ResponseType, but type system sees Any
                 if isinstance(response, (Response, JSONResponse, StreamingResponse)):
@@ -282,8 +277,17 @@ class Velocix:
                     {"error": "Invalid response type from middleware"}, status_code=500
                 )
 
-            # Fast path: no middleware and the handler never touches Request
-            return await self._execute_handler(None, scope, handler, path_params, plan)
+            # No middleware: pass everything explicitly so _execute_handler
+            # never re-reads handler/plan/path_params off the Request.
+            plan, needs_request, cache_ttl, call_mode = get_plan_and_needs_request(handler)
+            if needs_request:
+                request = self._init_request(scope, receive, handler, path_params)
+                return await self._execute_handler(
+                    request, scope, handler, path_params, plan, cache_ttl, call_mode
+                )
+            return await self._execute_handler(
+                None, scope, handler, path_params, plan, cache_ttl, call_mode
+            )
 
         except Exception as exc:
             if request is None:
@@ -312,6 +316,8 @@ class Velocix:
         handler: Callable[..., Any] | None = None,
         path_params: dict[str, Any] | None = None,
         plan: tuple[tuple[str, str, Any], ...] | None = None,
+        cache_ttl: float | None = None,
+        call_mode: int = 2,
     ) -> ResponseType:
         """Execute route handler with dependency injection"""
         if handler is None:
@@ -325,36 +331,45 @@ class Velocix:
             path_params = request.path_params  # type: ignore[union-attr]
 
         if plan is None:
-            plan = getattr(request, "_plan", None) if request is not None else None
-            if plan is None:
-                plan = get_resolution_plan(handler)
+            entry = getattr(request, "_plan", None) if request is not None else None
+            if entry is None:
+                entry = get_plan_and_needs_request(handler)
+            plan, _, cache_ttl, call_mode = entry
 
-        if request is not None:
-            method = request.method
-            path = request.path
-            query_string = request.query_string
-        else:
-            assert scope is not None
-            method = scope["method"]
-            path = scope["path"]
-            query_string = scope["query_string"]
-
-        # Response cache hit: reuse the serialized body, skip handler + orjson
-        cache_ttl = getattr(handler, "__response_cache_ttl__", None)
+        # Response cache hit: reuse the serialized body, skip handler + orjson.
+        # method/path/query are only needed to build the cache key, so defer
+        # extracting them until we know the route is actually cached.
         if cache_ttl is not None:
+            if request is not None:
+                method = request.method
+                path = request.path
+                query_string = request.query_string
+            else:
+                assert scope is not None
+                method = scope["method"]
+                path = scope["path"]
+                query_string = scope["query_string"]
             cache_key = f"{method}:{path}?{query_string.decode('latin-1')}"
             cached = self._response_cache.get(cache_key)
             if cached is not None and cached[0] > time.time():
                 return JSONResponse.from_body(cached[1], cached[2])
 
-        kwargs = await resolve_dependencies(handler, request, path_params, plan)
+        if call_mode == 1:
+            result = await handler(request)
+        elif call_mode == 0:
+            result = await handler()
+        else:
+            kwargs = await resolve_dependencies(handler, request, path_params, plan)
+            result = await handler(**kwargs)
 
-        result = await handler(**kwargs)
-
-        if isinstance(result, (Response, JSONResponse, StreamingResponse)):
-            response: ResponseType = result
-        elif isinstance(result, dict):
-            response = JSONResponse(result)
+        # dict is the common case (JSON handlers), so check it first; JSONResponse
+        # subclasses Response, so a single Response check covers both.
+        if isinstance(result, dict):
+            response: ResponseType = JSONResponse(result)
+        elif isinstance(result, Response):
+            response = result
+        elif isinstance(result, StreamingResponse):
+            response = result
         elif isinstance(result, str):
             response = Response(result, media_type="text/plain")
         elif result is None:
