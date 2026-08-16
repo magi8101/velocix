@@ -114,8 +114,11 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
         plan_tuple = tuple(plan)
         needs_request = any(kind in ("request", "depends") for _, kind, _ in plan_tuple)
         cache_ttl = getattr(handler, "__response_cache_ttl__", None)
-        # Fast call modes: empty plan -> no args; single positional "request"
-        # param -> call handler(request) directly, skipping the kwargs dict.
+        # Fast call modes:
+        #   0: no args                    -> handler()
+        #   1: single positional request  -> handler(request)
+        #   2: path/request only          -> sync kwargs, no coroutine
+        #   3: has Depends                -> async resolve_dependencies
         if not plan_tuple:
             call_mode = 0
         elif (
@@ -126,11 +129,54 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         ):
             call_mode = 1
+        elif any(kind == "depends" for _, kind, _ in plan_tuple):
+            call_mode = 3
         else:
             call_mode = 2
         entry = (plan_tuple, needs_request, cache_ttl, call_mode)
         _plan_cache[func_id] = entry
     return entry[0]
+
+
+def resolve_kwargs(
+    request: Any,
+    path_params: dict[str, Any] | None,
+    plan: tuple[tuple[str, str, Any], ...],
+) -> dict[str, Any]:
+    """Build the handler kwargs synchronously for plans without Depends.
+
+    The async resolve_dependencies() wraps this for Depends plans, where the
+    coroutine overhead is unavoidable. Path/request-only plans (the common
+    case) skip the coroutine entirely.
+    """
+    if not plan:
+        return {}
+    kwargs: dict[str, Any] = {}
+    path_params = path_params or {}
+    for param_name, kind, extra in plan:
+        # Inject request object
+        if kind == "request":
+            kwargs[param_name] = request
+            continue
+        # Inject path parameters with type conversion
+        if param_name in path_params:
+            raw_value = path_params[param_name]
+            param_type = extra
+            if param_type is not None:
+                try:
+                    if param_type is int:
+                        kwargs[param_name] = int(raw_value)
+                    elif param_type is float:
+                        kwargs[param_name] = float(raw_value)
+                    elif param_type is bool:
+                        kwargs[param_name] = raw_value.lower() in ("true", "1", "yes")
+                    else:
+                        kwargs[param_name] = raw_value
+                except (ValueError, AttributeError):
+                    kwargs[param_name] = raw_value
+            else:
+                kwargs[param_name] = raw_value
+    return kwargs
 
 
 async def resolve_dependencies(

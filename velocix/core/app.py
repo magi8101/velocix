@@ -8,7 +8,11 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from velocix.core.depends import get_plan_and_needs_request, resolve_dependencies
+from velocix.core.depends import (
+    get_plan_and_needs_request,
+    resolve_dependencies,
+    resolve_kwargs,
+)
 from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
 from velocix.core.request import Request
@@ -358,6 +362,9 @@ class Velocix:
             result = await handler(request)
         elif call_mode == 0:
             result = await handler()
+        elif call_mode == 2:
+            kwargs = resolve_kwargs(request, path_params, plan)
+            result = await handler(**kwargs)
         else:
             kwargs = await resolve_dependencies(handler, request, path_params, plan)
             result = await handler(**kwargs)
