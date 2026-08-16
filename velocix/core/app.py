@@ -104,6 +104,7 @@ class Velocix:
         "_compiled_middleware",
         "_startup_complete",
         "_response_cache",
+        "_mounts",
     )
 
     def __init__(self, debug: bool = False) -> None:
@@ -117,6 +118,7 @@ class Velocix:
         self._compiled_middleware: Any = None
         self._startup_complete: bool = False
         self._response_cache: dict[str, tuple[float, bytes, int, bytes | None]] = {}
+        self._mounts: dict[str, Any] = {}
         self._error_handler = ErrorHandler(debug=debug)
 
         self._setup_default_exception_handlers()
@@ -209,6 +211,25 @@ class Velocix:
         """Add middleware to stack"""
         self._middleware_stack.append(middleware_class)
 
+    def include_router(self, router: Router, prefix: str = "") -> None:
+        """Merge another router's routes into this app, optionally under a prefix.
+
+        Args:
+            router: Router whose routes should be registered on this app
+            prefix: Path prefix prepended to every route (e.g. "/api")
+        """
+        self.router.include_router(router, prefix=prefix)
+
+    def mount(self, path: str, app: Any) -> None:
+        """Mount an ASGI application under a path prefix.
+
+        Args:
+            path: Mount prefix (e.g. "/static")
+            app: ASGI callable (e.g. StaticFiles(directory=...))
+        """
+        path = path.rstrip("/") or "/"
+        self._mounts[path] = app
+
     def add_exception_handler(
         self,
         exc_class: type[Exception],
@@ -289,6 +310,24 @@ class Velocix:
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
         """Handle HTTP request"""
+        # Mounted ASGI apps own their response cycle entirely: dispatch before
+        # route resolution, with the mount prefix stripped from a copied scope.
+        # Empty dict is falsy, so apps without mounts pay a single attribute
+        # read and nothing else.
+        if self._mounts:
+            path = scope["path"]
+            for mount_path, mount_app in self._mounts.items():
+                if mount_path == "/" or path == mount_path or path.startswith(
+                    mount_path + "/"
+                ):
+                    if mount_path != "/":
+                        child_scope = dict(scope)
+                        child_scope["path"] = path[len(mount_path) :] or "/"
+                    else:
+                        child_scope = scope
+                    await mount_app(child_scope, receive, send)
+                    return
+
         request: Request | None = None
         try:
             handler, path_params = self.router.resolve(scope["method"], scope["path"])

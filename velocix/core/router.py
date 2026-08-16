@@ -111,6 +111,8 @@ class Router:
         self.static_routes: dict[str, dict[str, Callable]] = defaultdict(dict)
         self.dynamic_patterns: list[tuple] = []
         self.middleware_stack: list[Callable] = []
+        # Flat (method, path, handler) registration log for include_router
+        self._registered: list[tuple[str, str, Callable]] = []
 
     def add_constraint(self, param_name: str, constraint: Callable):
         """Add parameter constraint for validation"""
@@ -174,6 +176,8 @@ class Router:
             path = "/" + path
         if path != "/" and path.endswith("/"):
             path = path[:-1]
+
+        self._registered.append((method, path, handler))
 
         # Bump version so cached entries from before this mutation are invalidated
         self._routes_version += 1
@@ -288,6 +292,17 @@ class Router:
             return handler
 
         return decorator
+
+    def include_router(self, router: "Router", prefix: str = "") -> None:
+        """Merge another router's routes into this one, optionally under a prefix.
+
+        Args:
+            router: Router whose routes should be re-registered here
+            prefix: Path prefix prepended to every route (e.g. "/api")
+        """
+        prefix = prefix.rstrip("/") if prefix else ""
+        for method, path, handler in router._registered:
+            self.add_route(method, prefix + path, handler)
 
     def resolve(self, method: str, path: str) -> tuple[Callable, dict[str, str]]:
         """Ultra-fast route resolution with caching"""
