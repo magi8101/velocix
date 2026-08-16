@@ -130,6 +130,7 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
         Decorator for adding routes.
@@ -139,12 +140,13 @@ class Velocix:
             methods: HTTP methods to register
             status_code: Default status for non-Response handler returns
             response_model: msgspec Struct used to validate/filter dict returns
+            name: Route name for reverse routing via ``request.url_for()``
         """
 
         def decorator(handler: Callable[..., Any]) -> Callable[..., Any]:
             methods_set = methods or {"GET"}
             for method in methods_set:
-                self.router.add_route(method, path, handler)
+                self.router.add_route(method, path, handler, name=name)
             if status_code is not None:
                 handler.__route_status_code__ = status_code  # type: ignore[attr-defined]
             if response_model is not None:
@@ -159,9 +161,12 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for GET routes"""
-        return self.route(path, {"GET"}, status_code=status_code, response_model=response_model)
+        return self.route(
+            path, {"GET"}, status_code=status_code, response_model=response_model, name=name
+        )
 
     def post(
         self,
@@ -169,9 +174,12 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for POST routes"""
-        return self.route(path, {"POST"}, status_code=status_code, response_model=response_model)
+        return self.route(
+            path, {"POST"}, status_code=status_code, response_model=response_model, name=name
+        )
 
     def put(
         self,
@@ -179,9 +187,12 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PUT routes"""
-        return self.route(path, {"PUT"}, status_code=status_code, response_model=response_model)
+        return self.route(
+            path, {"PUT"}, status_code=status_code, response_model=response_model, name=name
+        )
 
     def delete(
         self,
@@ -189,9 +200,12 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for DELETE routes"""
-        return self.route(path, {"DELETE"}, status_code=status_code, response_model=response_model)
+        return self.route(
+            path, {"DELETE"}, status_code=status_code, response_model=response_model, name=name
+        )
 
     def patch(
         self,
@@ -199,13 +213,18 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PATCH routes"""
-        return self.route(path, {"PATCH"}, status_code=status_code, response_model=response_model)
+        return self.route(
+            path, {"PATCH"}, status_code=status_code, response_model=response_model, name=name
+        )
 
-    def websocket(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def websocket(
+        self, path: str, *, name: str | None = None
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for WebSocket routes"""
-        return self.route(path, {"WEBSOCKET"})
+        return self.route(path, {"WEBSOCKET"}, name=name)
 
     def add_middleware(self, middleware_class: type[BaseMiddleware] | Callable[..., Any]) -> None:
         """Add middleware to stack"""
