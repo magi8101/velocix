@@ -291,7 +291,11 @@ class JSONResponse(Response):
         return self
 
     def __init__(
-        self, content: Any, status_code: int = 200, headers: dict[str, str] | None = None
+        self,
+        content: Any,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        background: BackgroundTask | None = None,
     ) -> None:
         body: bytes
         body_len: int
@@ -299,7 +303,7 @@ class JSONResponse(Response):
         self.status_code: int = status_code
         self.media_type: str = "application/json"
         self.charset: str = "utf-8"
-        self.background = None
+        self.background = background
 
         # Fast path: orjson directly to body (no render() call)
         body = orjson.dumps(content, option=_ORJSON_OPTIONS)
@@ -322,7 +326,7 @@ class JSONResponse(Response):
 class StreamingResponse:
     """Streaming response for large data"""
 
-    __slots__ = ("content", "status_code", "headers", "media_type")
+    __slots__ = ("content", "status_code", "headers", "media_type", "background")
 
     def __init__(
         self,
@@ -330,11 +334,13 @@ class StreamingResponse:
         status_code: int = 200,
         headers: dict[str, str] | None = None,
         media_type: str = "application/octet-stream",
+        background: BackgroundTask | None = None,
     ) -> None:
         self.content = content
         self.status_code = status_code
         self.headers = headers or {}
         self.media_type = media_type
+        self.background = background
 
         if "content-type" not in {k.lower() for k in self.headers}:
             self.headers["content-type"] = media_type
@@ -350,7 +356,15 @@ class StreamingResponse:
 class FileResponse(StreamingResponse):
     """Zero-copy file streaming response"""
 
-    __slots__ = ("path", "chunk_size", "content", "status_code", "headers", "media_type")
+    __slots__ = (
+        "path",
+        "chunk_size",
+        "content",
+        "status_code",
+        "headers",
+        "media_type",
+        "background",
+    )
 
     def __init__(
         self,
@@ -360,6 +374,7 @@ class FileResponse(StreamingResponse):
         media_type: str | None = None,
         filename: str | None = None,
         chunk_size: int = 65536,
+        background: BackgroundTask | None = None,
     ) -> None:
         self.path = Path(path) if isinstance(path, str) else path
         self.chunk_size = chunk_size
@@ -383,6 +398,7 @@ class FileResponse(StreamingResponse):
             status_code=status_code,
             headers=headers,
             media_type=media_type,
+            background=background,
         )
 
     async def _stream_file(self) -> AsyncIterator[bytes]:

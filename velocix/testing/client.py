@@ -98,6 +98,8 @@ class WebSocketTestSession:
 class TestClient:
     """Test client for making requests to ASGI app with full HTTP support"""
 
+    __test__ = False  # not a pytest test class
+
     __slots__ = ("app", "_lifespan_started", "_base_url", "_cookies", "_headers")
 
     def __init__(
