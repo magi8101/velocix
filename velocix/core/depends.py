@@ -11,9 +11,10 @@ from typing import Any, TypeVar, get_type_hints
 # Signature cache for performance
 _sig_cache: dict[int, inspect.Signature] = {}
 _type_hints_cache: dict[int, dict[str, Any]] = {}
-# Precomputed resolution plan per handler: tuple of (param_name, kind, extra)
+# Precomputed resolution plan per handler: (plan, needs_request_flag)
+# plan: tuple of (param_name, kind, extra)
 # kind: "request" | "depends" | "path" ; extra: Depends instance or type hint
-_plan_cache: dict[int, tuple[tuple[str, str, Any], ...]] = {}
+_plan_cache: dict[int, tuple[tuple[tuple[str, str, Any], ...], bool]] = {}
 
 T = TypeVar("T")
 
@@ -71,10 +72,28 @@ def _get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
     return _type_hints_cache[func_id]
 
 
+def get_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, Any], ...]:
+    """Return the cached per-handler resolution plan (built on first call)."""
+    return _build_resolution_plan(handler)
+
+
+def get_plan_and_needs_request(
+    handler: Callable[..., Any],
+) -> tuple[tuple[tuple[str, str, Any], ...], bool]:
+    """One cached lookup returning (plan, needs_request_flag)."""
+    func_id = id(handler)
+    entry = _plan_cache.get(func_id)
+    if entry is None:
+        _build_resolution_plan(handler)
+        entry = _plan_cache[func_id]
+    return entry
+
+
 def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, Any], ...]:
     """Precompute the per-handler resolution plan once, then cache it."""
     func_id = id(handler)
-    if func_id not in _plan_cache:
+    entry = _plan_cache.get(func_id)
+    if entry is None:
         sig = _get_signature(handler)
         type_hints = _get_type_hints_cached(handler)
         plan: list[tuple[str, str, Any]] = []
@@ -91,12 +110,18 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             # Path parameter with type conversion
             else:
                 plan.append((param_name, "path", type_hints.get(param_name)))
-        _plan_cache[func_id] = tuple(plan)
-    return _plan_cache[func_id]
+        plan_tuple = tuple(plan)
+        needs_request = any(kind in ("request", "depends") for _, kind, _ in plan_tuple)
+        entry = (plan_tuple, needs_request)
+        _plan_cache[func_id] = entry
+    return entry[0]
 
 
 async def resolve_dependencies(
-    handler: Callable[..., Any], request: Any, path_params: dict[str, Any] | None = None
+    handler: Callable[..., Any],
+    request: Any,
+    path_params: dict[str, Any] | None = None,
+    plan: tuple[tuple[str, str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     """
     Resolve dependencies from function signature (FastAPI pattern).
@@ -110,16 +135,18 @@ async def resolve_dependencies(
 
     The resolution plan is precomputed once per handler, so handlers with no
     parameters (or only "request") skip all per-request signature work.
+    Callers with the plan already in hand pass it in to avoid the lookup.
 
     Args:
         handler: Route handler function
         request: Request object
         path_params: Path parameters from URL
+        plan: Precomputed resolution plan (optional)
 
     Returns:
         Dictionary of resolved dependencies
     """
-    plan = _build_resolution_plan(handler)
+    plan = _build_resolution_plan(handler) if plan is None else plan
     if not plan:
         return {}
 

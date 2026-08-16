@@ -69,6 +69,8 @@ class CachedRoute:
     params: dict[str, Any]
     created_at: float = field(default_factory=time.time)
     ttl: float = 300.0  # 5 minutes
+    version: int = 0
+    metrics: "RouteMetrics | None" = None
 
     def is_valid(self) -> bool:
         return time.time() - self.created_at < self.ttl
@@ -93,7 +95,8 @@ class Router:
 
     def __init__(self):
         self.root = RouteNode()
-        self.route_cache: dict[str, CachedRoute] = {}
+        self.route_cache: dict[str, dict[str, CachedRoute]] = defaultdict(dict)
+        self._routes_version: int = 0
         self.bloom_filter = BloomFilter()
         self.method_trees: dict[str, RouteNode] = {
             "GET": RouteNode(),
@@ -172,12 +175,14 @@ class Router:
         if path != "/" and path.endswith("/"):
             path = path[:-1]
 
+        # Bump version so cached entries from before this mutation are invalidated
+        self._routes_version += 1
+
         # Check for static route optimization
         if "{" not in path:
             self.static_routes[method][path] = handler
-            cache_key = f"{method}:{path}"
-            self.route_cache[cache_key] = CachedRoute(handler, {})
-            self.bloom_filter.add(cache_key)
+            self.route_cache[method][path] = CachedRoute(handler, {}, version=self._routes_version)
+            self.bloom_filter.add(f"{method}:{path}")
             return
 
         # Build route tree
@@ -286,21 +291,21 @@ class Router:
 
     def resolve(self, method: str, path: str) -> tuple[Callable, dict[str, str]]:
         """Ultra-fast route resolution with caching"""
-        start_time = time.time()
-
-        # Check cache first
-        cache_key = f"{method}:{path}"
-        if cache_key in self.route_cache:
-            cached = self.route_cache[cache_key]
-            if cached.is_valid():
-                if hasattr(cached.handler, "__route_metrics__"):
-                    cached.handler.__route_metrics__.cache_hits += 1
+        # Check cache first: no key allocation, no clock reads on the hot path.
+        # Cached entries are validated against the router's mutation version
+        # instead of a wall-clock TTL, which is exact for in-process mutation.
+        by_method = self.route_cache.get(method)
+        if by_method is not None:
+            cached = by_method.get(path)
+            if cached is not None and cached.version == self._routes_version:
+                if cached.metrics is not None:
+                    cached.metrics.cache_hits += 1
                 return cached.handler, cached.params
 
         # Check static routes first (fastest path)
         if method in self.static_routes and path in self.static_routes[method]:
             handler = self.static_routes[method][path]
-            self.route_cache[cache_key] = CachedRoute(handler, {})
+            self.route_cache[method][path] = CachedRoute(handler, {}, version=self._routes_version)
             return handler, {}
 
         # Path exists but not for this method
@@ -313,6 +318,7 @@ class Router:
         if not tree:
             raise NotFound(f"Route not found: {path}")
 
+        start_time = time.time()
         current = tree
         params = {}
 
@@ -365,7 +371,12 @@ class Router:
             handler.__route_metrics__.update(response_time)  # type: ignore[attr-defined]
 
             # Cache result
-            self.route_cache[cache_key] = CachedRoute(handler, params.copy())
+            self.route_cache[method][path] = CachedRoute(
+                handler,
+                params.copy(),
+                version=self._routes_version,
+                metrics=handler.__route_metrics__,  # type: ignore[attr-defined]
+            )
 
             return handler, params
 
@@ -436,7 +447,7 @@ class Router:
 
         return {
             "total_routes": total_routes,
-            "cache_size": len(self.route_cache),
+            "cache_size": sum(len(routes) for routes in self.route_cache.values()),
             "cache_hit_rate": cache_hit_rate / max(total_hits, 1) * 100,
             "bloom_filter_size": self.bloom_filter.bit_array_size,
             "average_resolution_time": "< 0.001ms",
@@ -444,6 +455,9 @@ class Router:
 
     def cleanup_cache(self):
         """Remove expired cache entries"""
-        expired_keys = [key for key, cached in self.route_cache.items() if not cached.is_valid()]
-        for key in expired_keys:
-            del self.route_cache[key]
+        for method, routes in list(self.route_cache.items()):
+            expired = [path for path, cached in routes.items() if not cached.is_valid()]
+            for path in expired:
+                del routes[path]
+            if not routes:
+                del self.route_cache[method]
