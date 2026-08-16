@@ -69,7 +69,36 @@ class MultipartForm:
         self._max_fields = max_fields
 
     async def parse(self, receive: Any, content_type: str) -> dict[str, Any]:
-        """Parse multipart form data"""
+        """Parse multipart form data from a streaming receive callable.
+
+        Returns ``{"fields": {...}, "files": {...}}``.
+        """
+        chunks = []
+        total_size = 0
+        async for chunk in self._read_body(receive):
+            total_size += len(chunk)
+            if total_size > self._max_size:
+                raise ValueError(f"Form data exceeds max size {self._max_size}")
+            chunks.append(chunk)
+
+        parsed = self._parse_parts(chunks, content_type)
+        fields, files = await self._split_parts(parsed)
+        return {"fields": fields, "files": files}
+
+    async def parse_bytes(self, body: bytes, content_type: str) -> dict[str, Any]:
+        """Parse a fully-buffered multipart body.
+
+        Returns a merged ``{name: value}`` dict where values are ``str`` for
+        form fields and ``UploadFile`` for file parts.
+        """
+        if len(body) > self._max_size:
+            raise ValueError(f"Form data exceeds max size {self._max_size}")
+        parsed = self._parse_parts([body], content_type)
+        fields, files = await self._split_parts(parsed)
+        return {**fields, **files}
+
+    def _parse_parts(self, chunks: list[bytes], content_type: str) -> list[dict[str, Any]]:
+        """Run the multipart parser over buffered chunks, returning raw parts."""
         if not content_type.startswith("multipart/form-data"):
             raise ValueError("Not multipart/form-data")
 
@@ -82,14 +111,6 @@ class MultipartForm:
 
         if not boundary:
             raise ValueError("Missing boundary in content-type")
-
-        chunks = []
-        total_size = 0
-        async for chunk in self._read_body(receive):
-            total_size += len(chunk)
-            if total_size > self._max_size:
-                raise ValueError(f"Form data exceeds max size {self._max_size}")
-            chunks.append(chunk)
 
         parsed: list[dict[str, Any]] = []
         current: dict[str, Any] = {}
@@ -143,6 +164,10 @@ class MultipartForm:
         except Exception as exc:
             raise ValueError(f"Invalid multipart form data: {exc}") from exc
 
+        return parsed
+
+    async def _split_parts(self, parsed: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, UploadFile]]:
+        """Merge raw parts into (fields, files) dicts."""
         fields: dict[str, Any] = {}
         files: dict[str, UploadFile] = {}
 
@@ -169,7 +194,7 @@ class MultipartForm:
             else:
                 fields[name] = data.decode("utf-8", errors="replace")
 
-        return {"fields": fields, "files": files}
+        return fields, files
 
     async def _read_body(self, receive: Any) -> AsyncIterator[bytes]:
         """Read request body in chunks"""

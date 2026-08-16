@@ -10,6 +10,9 @@ from urllib.parse import parse_qs
 import orjson
 from fast_query_parsers import parse_query_string
 
+from velocix.core.exceptions import HTTPException
+from velocix.http.multipart import MultipartForm
+
 
 def cookie_parser(cookie_string: str) -> dict[str, str]:
     """
@@ -267,16 +270,28 @@ class Request:
 
     async def form(self) -> dict[str, Any]:
         """
-        Parse form data (application/x-www-form-urlencoded).
-        Cached after first parse.
+        Parse form data (application/x-www-form-urlencoded or
+        multipart/form-data). File parts become ``UploadFile`` values;
+        cached after first parse.
         """
         if self._form is None:
-            body = await self.body()
-            if body:
-                form_data = parse_qs(body.decode("utf-8"), keep_blank_values=True)
-                self._form = {k: v[0] if len(v) == 1 else v for k, v in form_data.items()}
+            content_type = self.headers.get(b"content-type", b"").decode("latin-1")
+            if content_type.startswith("multipart/form-data"):
+                try:
+                    self._form = await MultipartForm().parse_bytes(
+                        await self.body(), content_type
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
             else:
-                self._form = {}
+                body = await self.body()
+                if body:
+                    form_data = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+                    self._form = {
+                        k: v[0] if len(v) == 1 else v for k, v in form_data.items()
+                    }
+                else:
+                    self._form = {}
         return self._form
 
     async def is_disconnected(self) -> bool:
