@@ -59,6 +59,7 @@ class Request:
         "_base_url",
         "path_params",
         "_state",
+        "_session",
         "app",
         "_method",
         "_path",
@@ -92,6 +93,9 @@ class Request:
 
         # State object for middleware (lazily created on first access)
         self._state: _RequestState | None = None
+
+        # Session dict, set by SessionMiddleware (None when not installed)
+        self._session: dict[str, Any] | None = None
 
         # Owning application (set by the ASGI app)
         self.app: Any = None
@@ -195,6 +199,19 @@ class Request:
         if self._state is None:
             self._state = _RequestState()
         return self._state
+
+    @property
+    def session(self) -> dict[str, Any]:
+        """Signed session dict (set by SessionMiddleware)."""
+        if self._session is None:
+            raise AttributeError(
+                "SessionMiddleware must be installed to use request.session"
+            )
+        return self._session
+
+    @session.setter
+    def session(self, value: dict[str, Any]) -> None:
+        self._session = value
 
     @property
     def cookies(self) -> dict[str, str]:
