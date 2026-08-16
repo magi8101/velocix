@@ -270,10 +270,22 @@ class JSONResponse(Response):
     __slots__ = ()  # Inherit parent slots, no additional attributes
 
     @classmethod
-    def from_body(cls, body: bytes, status_code: int = 200) -> "JSONResponse":
+    def from_body(
+        cls,
+        body: bytes,
+        status_code: int = 200,
+        etag: bytes | None = None,
+        cache_control: str | None = None,
+    ) -> "JSONResponse":
         """
         Build a JSONResponse from a pre-serialized body (skips orjson).
         Used by the response cache to reuse serialized bytes.
+
+        Args:
+            body: Pre-serialized JSON bytes
+            status_code: Response status code
+            etag: Optional ETag header value (raw bytes)
+            cache_control: Optional Cache-Control header value
         """
         self = cls.__new__(cls)
         self.status_code = status_code
@@ -286,6 +298,10 @@ class JSONResponse(Response):
             _JSON_CONTENT_TYPE_HEADER,
             (_CONTENT_LENGTH, str(body_len).encode("latin-1")),
         ]
+        if etag is not None:
+            self.raw_headers.append((b"etag", etag))
+        if cache_control is not None:
+            self.raw_headers.append((b"cache-control", cache_control.encode("latin-1")))
         self._headers = None
         self._headers_set = False
         return self

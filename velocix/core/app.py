@@ -8,6 +8,8 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
+import xxhash
+
 from velocix.core.depends import (
     get_plan_and_needs_request,
     resolve_dependencies,
@@ -40,6 +42,10 @@ def cache_response(ttl: float = 60.0) -> Callable[[Callable[..., Any]], Callable
     handlers whose output does not depend on per-request state (auth, headers,
     cookies); opt-in per route.
 
+    Cached responses also carry an ETag (xxh64 of the body) and a
+    Cache-Control header. Requests with a matching If-None-Match (GET/HEAD)
+    are answered with 304 Not Modified and an empty body.
+
     Usage:
         @app.get("/items")
         @cache_response(ttl=60)
@@ -52,6 +58,34 @@ def cache_response(ttl: float = 60.0) -> Callable[[Callable[..., Any]], Callable
         return handler
 
     return decorator
+
+
+def _make_etag(body: bytes) -> bytes:
+    """Strong ETag for a serialized body: quoted xxh64 hex digest."""
+    return b'"' + xxhash.xxh64(body).hexdigest().encode("ascii") + b'"'
+
+
+def _if_none_match_matches(header: bytes, etag: bytes) -> bool:
+    """Strong comparison of an If-None-Match header against one ETag.
+
+    Handles comma-separated lists and the wildcard `*` (RFC 9110).
+    """
+    for candidate in header.split(b","):
+        candidate = candidate.strip()
+        if candidate == b"*" or candidate == etag:
+            return True
+    return False
+
+
+def _request_if_none_match(
+    request: "Request | None", scope: dict[str, Any] | None
+) -> bytes | None:
+    """Read the If-None-Match header from a Request or raw scope headers."""
+    if request is not None:
+        return request.headers.get(b"if-none-match")
+    if scope is not None:
+        return dict(scope.get("headers", [])).get(b"if-none-match")
+    return None
 
 
 class Velocix:
@@ -81,7 +115,7 @@ class Velocix:
         self._background_tasks: set[Any] = set()
         self._compiled_middleware: Any = None
         self._startup_complete: bool = False
-        self._response_cache: dict[str, tuple[float, bytes, int]] = {}
+        self._response_cache: dict[str, tuple[float, bytes, int, bytes | None]] = {}
         self._error_handler = ErrorHandler(debug=debug)
 
         self._setup_default_exception_handlers()
@@ -356,7 +390,34 @@ class Velocix:
             cache_key = f"{method}:{path}?{query_string.decode('latin-1')}"
             cached = self._response_cache.get(cache_key)
             if cached is not None and cached[0] > time.time():
-                return JSONResponse.from_body(cached[1], cached[2])
+                etag = cached[3]
+                remaining = max(int(cached[0] - time.time()), 0)
+                inm = _request_if_none_match(request, scope)
+                if (
+                    etag is not None
+                    and method in ("GET", "HEAD")
+                    and inm is not None
+                    and _if_none_match_matches(inm, etag)
+                ):
+                    not_modified = Response(
+                        b"",
+                        status_code=304,
+                        headers={
+                            "etag": etag.decode("latin-1"),
+                            "cache-control": f"public, max-age={remaining}",
+                        },
+                    )
+                    # 304 has no body: drop the auto-added content-type header
+                    not_modified.raw_headers = [
+                        (k, v) for k, v in not_modified.raw_headers if k != b"content-type"
+                    ]
+                    return not_modified
+                return JSONResponse.from_body(
+                    cached[1],
+                    cached[2],
+                    etag=etag,
+                    cache_control=f"public, max-age={remaining}",
+                )
 
         if call_mode == 1:
             result = await handler(request)
@@ -384,12 +445,22 @@ class Velocix:
         else:
             response = JSONResponse(result)
 
-        # Cache the serialized body only for dict/JSON responses
+        # Cache the serialized body only for dict/JSON responses. Compute the
+        # ETag once at store time (xxh64 of the exact bytes) so hits never
+        # re-hash; the served response carries etag + cache-control so clients
+        # can send conditional requests.
         if cache_ttl is not None and isinstance(response, JSONResponse):
+            body = bytes(response.body)
+            etag = _make_etag(body)
             self._response_cache[cache_key] = (
                 time.time() + cache_ttl,
-                bytes(response.body),
+                body,
                 response.status_code,
+                etag,
+            )
+            response.raw_headers.append((b"etag", etag))
+            response.raw_headers.append(
+                (b"cache-control", f"public, max-age={int(cache_ttl)}".encode("latin-1"))
             )
 
         return response
