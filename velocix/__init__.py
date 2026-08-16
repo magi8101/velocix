@@ -34,7 +34,7 @@ from functools import partial
 
 from velocix.core.app import Velocix, cache_response
 from velocix.core.depends import Depends
-from velocix.core.exceptions import HTTPException
+from velocix.core.exceptions import HTTPException, NoMatchFound
 from velocix.core.middleware import BaseMiddleware, SessionMiddleware
 from velocix.core.params import Cookie, File, Form, Header, Query
 from velocix.core.request import Request
@@ -127,6 +127,7 @@ __all__ = [
     "HTMLResponse",
     "Router",
     "HTTPException",
+    "NoMatchFound",
     "BaseMiddleware",
     "Depends",
     "SessionMiddleware",

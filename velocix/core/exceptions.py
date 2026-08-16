@@ -189,6 +189,18 @@ class TooManyRequests(HTTPException):
         super().__init__(429, detail, headers=headers)
 
 
+class NoMatchFound(Exception):
+    """
+    Raised by ``request.url_for()`` when no route matches the given name.
+    Starlette-compatible.
+    """
+
+    def __init__(self, name: str, path_params: dict[str, Any] | None = None) -> None:
+        self.name = name
+        self.path_params = path_params or {}
+        super().__init__(f"No route found for name {name!r}")
+
+
 class WebSocketDisconnect(Exception):
     """
     WebSocket disconnection exception (Starlette pattern).

@@ -311,6 +311,27 @@ class Request:
                     self._form = {}
         return self._form
 
+    def url_for(self, name: str, /, **path_params: Any) -> str:
+        """Build a full URL for a named route (reverse routing).
+
+        Args:
+            name: Route name registered via ``name=`` on a route decorator
+            **path_params: Values for the route's path placeholders
+
+        Returns:
+            Absolute URL built from the request's base URL, e.g.
+            ``http://testserver/users/42``
+
+        Raises:
+            NoMatchFound: If no route with the given name exists
+        """
+        from typing import cast
+
+        from velocix.core.router import Router
+
+        router = cast(Router, self.app.router)
+        return self.base_url + router.url_path_for(name, **path_params)
+
     async def is_disconnected(self) -> bool:
         """Check if client has disconnected (non-blocking)"""
         return self._is_disconnected
