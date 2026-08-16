@@ -15,13 +15,21 @@ from typing import Any, TypeVar, get_type_hints
 # one after GC). The identity guard re-checks anyway as defense in depth.
 _sig_cache: dict[int, tuple[Callable[..., Any], inspect.Signature]] = {}
 _type_hints_cache: dict[int, tuple[Callable[..., Any], dict[str, Any]]] = {}
-# Precomputed resolution plan per handler: (plan, needs_request, cache_ttl, call_mode)
+# Precomputed resolution plan per handler:
+# (plan, needs_request, cache_ttl, call_mode, status_code, response_model)
 # plan: tuple of (param_name, kind, extra)
 # kind: "request" | "depends" | "path" ; extra: Depends instance or type hint
 # call_mode: 0 = no args, 1 = positional request only, 2 = full kwargs resolution
-_plan_cache: dict[
-    int, tuple[Callable[..., Any], tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]]
-] = {}
+# status_code/response_model: route-decorator defaults applied to non-Response results
+PlanEntry = tuple[
+    tuple[tuple[str, str, Any], ...],
+    bool,
+    float | None,
+    int,
+    int | None,
+    type[Any] | None,
+]
+_plan_cache: dict[int, tuple[Callable[..., Any], PlanEntry]] = {}
 
 T = TypeVar("T")
 
@@ -89,10 +97,9 @@ def get_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, An
     return _build_resolution_plan(handler)
 
 
-def get_plan_and_needs_request(
-    handler: Callable[..., Any],
-) -> tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]:
-    """One cached lookup returning (plan, needs_request, cache_ttl, call_mode)."""
+def get_plan_and_needs_request(handler: Callable[..., Any]) -> PlanEntry:
+    """One cached lookup returning (plan, needs_request, cache_ttl, call_mode,
+    status_code, response_model)."""
     func_id = id(handler)
     entry = _plan_cache.get(func_id)
     if entry is None or entry[0] is not handler:
@@ -125,6 +132,8 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
         plan_tuple = tuple(plan)
         needs_request = any(kind in ("request", "depends") for _, kind, _ in plan_tuple)
         cache_ttl = getattr(handler, "__response_cache_ttl__", None)
+        status_code = getattr(handler, "__route_status_code__", None)
+        response_model = getattr(handler, "__response_model__", None)
         # Fast call modes:
         #   0: no args                    -> handler()
         #   1: single positional request  -> handler(request)
@@ -144,7 +153,10 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             call_mode = 3
         else:
             call_mode = 2
-        entry = (handler, (plan_tuple, needs_request, cache_ttl, call_mode))
+        entry = (
+            handler,
+            (plan_tuple, needs_request, cache_ttl, call_mode, status_code, response_model),
+        )
         _plan_cache[func_id] = entry
     return entry[1][0]
 

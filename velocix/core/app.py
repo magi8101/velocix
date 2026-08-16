@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
+import msgspec
 import xxhash
 
 from velocix.core.depends import (
@@ -121,37 +122,84 @@ class Velocix:
         self._setup_default_exception_handlers()
 
     def route(
-        self, path: str, methods: set[str] | None = None
+        self,
+        path: str,
+        methods: set[str] | None = None,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator for adding routes"""
+        """
+        Decorator for adding routes.
+
+        Args:
+            path: URL path
+            methods: HTTP methods to register
+            status_code: Default status for non-Response handler returns
+            response_model: msgspec Struct used to validate/filter dict returns
+        """
 
         def decorator(handler: Callable[..., Any]) -> Callable[..., Any]:
             methods_set = methods or {"GET"}
             for method in methods_set:
                 self.router.add_route(method, path, handler)
+            if status_code is not None:
+                handler.__route_status_code__ = status_code  # type: ignore[attr-defined]
+            if response_model is not None:
+                handler.__response_model__ = response_model  # type: ignore[attr-defined]
             return handler
 
         return decorator
 
-    def get(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def get(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for GET routes"""
-        return self.route(path, {"GET"})
+        return self.route(path, {"GET"}, status_code=status_code, response_model=response_model)
 
-    def post(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def post(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for POST routes"""
-        return self.route(path, {"POST"})
+        return self.route(path, {"POST"}, status_code=status_code, response_model=response_model)
 
-    def put(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def put(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PUT routes"""
-        return self.route(path, {"PUT"})
+        return self.route(path, {"PUT"}, status_code=status_code, response_model=response_model)
 
-    def delete(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def delete(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for DELETE routes"""
-        return self.route(path, {"DELETE"})
+        return self.route(path, {"DELETE"}, status_code=status_code, response_model=response_model)
 
-    def patch(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def patch(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PATCH routes"""
-        return self.route(path, {"PATCH"})
+        return self.route(path, {"PATCH"}, status_code=status_code, response_model=response_model)
 
     def websocket(self, path: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for WebSocket routes"""
@@ -317,14 +365,37 @@ class Velocix:
 
             # No middleware: pass everything explicitly so _execute_handler
             # never re-reads handler/plan/path_params off the Request.
-            plan, needs_request, cache_ttl, call_mode = get_plan_and_needs_request(handler)
+            (
+                plan,
+                needs_request,
+                cache_ttl,
+                call_mode,
+                status_code,
+                response_model,
+            ) = get_plan_and_needs_request(handler)
             if needs_request:
                 request = self._init_request(scope, receive, handler, path_params)
                 return await self._execute_handler(
-                    request, scope, handler, path_params, plan, cache_ttl, call_mode
+                    request,
+                    scope,
+                    handler,
+                    path_params,
+                    plan,
+                    cache_ttl,
+                    call_mode,
+                    status_code,
+                    response_model,
                 )
             return await self._execute_handler(
-                None, scope, handler, path_params, plan, cache_ttl, call_mode
+                None,
+                scope,
+                handler,
+                path_params,
+                plan,
+                cache_ttl,
+                call_mode,
+                status_code,
+                response_model,
             )
 
         except Exception as exc:
@@ -356,6 +427,8 @@ class Velocix:
         plan: tuple[tuple[str, str, Any], ...] | None = None,
         cache_ttl: float | None = None,
         call_mode: int = 2,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
     ) -> ResponseType:
         """Execute route handler with dependency injection"""
         if handler is None:
@@ -372,7 +445,7 @@ class Velocix:
             entry = getattr(request, "_plan", None) if request is not None else None
             if entry is None:
                 entry = get_plan_and_needs_request(handler)
-            plan, _, cache_ttl, call_mode = entry
+            plan, _, cache_ttl, call_mode, status_code, response_model = entry
 
         # Response cache hit: reuse the serialized body, skip handler + orjson.
         # method/path/query are only needed to build the cache key, so defer
@@ -432,18 +505,33 @@ class Velocix:
 
         # dict is the common case (JSON handlers), so check it first; JSONResponse
         # subclasses Response, so a single Response check covers both.
+        # status_code/response_model are route-decorator defaults; an explicit
+        # Response return always wins (its own status/body are authoritative).
+        response: ResponseType
         if isinstance(result, dict):
-            response: ResponseType = JSONResponse(result)
+            if response_model is not None:
+                converted = msgspec.convert(result, type=response_model)
+                response = JSONResponse.from_body(
+                    msgspec.json.encode(converted), status_code=status_code or 200
+                )
+            else:
+                response = JSONResponse(result, status_code=status_code or 200)
         elif isinstance(result, Response):
             response = result
         elif isinstance(result, StreamingResponse):
             response = result
         elif isinstance(result, str):
-            response = Response(result, media_type="text/plain")
+            response = Response(result, media_type="text/plain", status_code=status_code or 200)
         elif result is None:
-            response = Response(b"", status_code=204)
+            response = Response(b"", status_code=status_code or 204)
         else:
-            response = JSONResponse(result)
+            if response_model is not None:
+                converted = msgspec.convert(result, type=response_model)
+                response = JSONResponse.from_body(
+                    msgspec.json.encode(converted), status_code=status_code or 200
+                )
+            else:
+                response = JSONResponse(result, status_code=status_code or 200)
 
         # Cache the serialized body only for dict/JSON responses. Compute the
         # ETag once at store time (xxh64 of the exact bytes) so hits never
