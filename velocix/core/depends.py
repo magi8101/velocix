@@ -8,14 +8,20 @@ import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar, get_type_hints
 
-# Signature cache for performance
-_sig_cache: dict[int, inspect.Signature] = {}
-_type_hints_cache: dict[int, dict[str, Any]] = {}
+# Signature cache for performance.
+# Entries store the callable itself alongside the cached value: holding a
+# strong reference pins the object's id(), so a recycled id() can never
+# collide with a live entry (id() of a dead object can be reused by a new
+# one after GC). The identity guard re-checks anyway as defense in depth.
+_sig_cache: dict[int, tuple[Callable[..., Any], inspect.Signature]] = {}
+_type_hints_cache: dict[int, tuple[Callable[..., Any], dict[str, Any]]] = {}
 # Precomputed resolution plan per handler: (plan, needs_request, cache_ttl, call_mode)
 # plan: tuple of (param_name, kind, extra)
 # kind: "request" | "depends" | "path" ; extra: Depends instance or type hint
 # call_mode: 0 = no args, 1 = positional request only, 2 = full kwargs resolution
-_plan_cache: dict[int, tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]] = {}
+_plan_cache: dict[
+    int, tuple[Callable[..., Any], tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]]
+] = {}
 
 T = TypeVar("T")
 
@@ -55,22 +61,27 @@ class Depends:
 
 
 def _get_signature(func: Callable[..., Any]) -> inspect.Signature:
-    """Get cached function signature"""
+    """Get cached function signature (entry pins the callable to prevent id reuse)"""
     func_id = id(func)
-    if func_id not in _sig_cache:
-        _sig_cache[func_id] = inspect.signature(func)
-    return _sig_cache[func_id]
+    entry = _sig_cache.get(func_id)
+    if entry is None or entry[0] is not func:
+        _sig_cache[func_id] = (func, inspect.signature(func))
+        entry = _sig_cache[func_id]
+    return entry[1]
 
 
 def _get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
-    """Get cached type hints"""
+    """Get cached type hints (entry pins the callable to prevent id reuse)"""
     func_id = id(func)
-    if func_id not in _type_hints_cache:
+    entry = _type_hints_cache.get(func_id)
+    if entry is None or entry[0] is not func:
         try:
-            _type_hints_cache[func_id] = get_type_hints(func)
+            hints = get_type_hints(func)
         except Exception:
-            _type_hints_cache[func_id] = {}
-    return _type_hints_cache[func_id]
+            hints = {}
+        _type_hints_cache[func_id] = (func, hints)
+        entry = _type_hints_cache[func_id]
+    return entry[1]
 
 
 def get_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, Any], ...]:
@@ -84,17 +95,17 @@ def get_plan_and_needs_request(
     """One cached lookup returning (plan, needs_request, cache_ttl, call_mode)."""
     func_id = id(handler)
     entry = _plan_cache.get(func_id)
-    if entry is None:
+    if entry is None or entry[0] is not handler:
         _build_resolution_plan(handler)
         entry = _plan_cache[func_id]
-    return entry
+    return entry[1]
 
 
 def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, Any], ...]:
     """Precompute the per-handler resolution plan once, then cache it."""
     func_id = id(handler)
     entry = _plan_cache.get(func_id)
-    if entry is None:
+    if entry is None or entry[0] is not handler:
         sig = _get_signature(handler)
         type_hints = _get_type_hints_cached(handler)
         plan: list[tuple[str, str, Any]] = []
@@ -133,9 +144,9 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             call_mode = 3
         else:
             call_mode = 2
-        entry = (plan_tuple, needs_request, cache_ttl, call_mode)
+        entry = (handler, (plan_tuple, needs_request, cache_ttl, call_mode))
         _plan_cache[func_id] = entry
-    return entry[0]
+    return entry[1][0]
 
 
 def resolve_kwargs(
