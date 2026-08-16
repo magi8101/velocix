@@ -50,6 +50,7 @@ from velocix.core.response import (
     StreamingResponse,
 )
 from velocix.core.router import Router
+from velocix.core.staticfiles import StaticFiles
 
 # HTTP Client
 from velocix.http.client import HTTPClient
@@ -153,6 +154,8 @@ __all__ = [
     "Query",
     "Header",
     "Cookie",
+    # Static files
+    "StaticFiles",
     # Security
     "JWTManager",
     "JWTHandler",
