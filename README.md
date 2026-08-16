@@ -1,147 +1,197 @@
 # Velocix
 
-<p align="center">
-  <img src="docs/logo.png" alt="Velocix Logo" width="400">
-</p>
+A high-performance ASGI web framework for Python with FastAPI-style ergonomics and a
+Starlette-inspired core. Routing, parameter injection, validation, middleware, WebSockets,
+OpenAPI, security, and testing utilities — built for measurable speed, not claims.
 
-<p align="center">
-  <strong>A learning project where I rebuilt Starlette's core patterns to understand how modern async Python web frameworks work.</strong>
-</p>
-
----
-
-## What This Is
-
-- A study project built during my B.Tech CSE studies
-- Heavily inspired by Starlette's architecture and patterns
-- An exercise in understanding ASGI and async Python
-- A way to learn performance optimization concepts
-- A minimal framework experiment
-
-## What This Is NOT
-
-- A production-ready framework
-- Faster than existing solutions (FastAPI/Starlette)
-- Something you should use instead of established frameworks
-- A unique or groundbreaking implementation
-
-## What I Learned
-
-- How ASGI works under the hood
-- Async Python patterns and best practices
-- Why performance optimization requires actual measurement, not assumptions
-- How routing, middleware, and request handling work internally
-- That framework overhead is usually negligible compared to database queries and business logic
-- The importance of honest benchmarking and documentation
+- Python 3.10+
+- Runs on any ASGI server (granian, uvicorn, hypercorn)
+- Zero runtime dependencies beyond the fast primitives: `orjson`, `msgspec`,
+  `fast-query-parsers`, `xxhash`
 
 ---
 
-## 📦 Installation
+## Features
 
-### Prerequisites
-- Python 3.10 or higher
-- pip
+**Routing**
+- Static, dynamic (`/users/{user_id}`), and typed path params with constraint support
+- Named routes and reverse routing: `request.url_for("user", user_id=42)`
+- `include_router(router, prefix="/api")` and `app.mount("/static", StaticFiles(...))`
+- `status_code=` and `response_model=` on route decorators
 
-### Install from PyPI
+**Parameter injection**
+- `Query`, `Header`, `Cookie`, `Form`, `File` markers — both `Annotated[...]` and classic
+  `= Query(...)` styles
+- Request-body binding to msgspec Structs with structured 422 errors
+- `Depends` dependency injection with per-request caching
+
+**HTTP**
+- Response classes: `Response`, `JSONResponse`, `HTMLResponse`, `PlainTextResponse`,
+  `StreamingResponse`, `FileResponse`, `EventStreamResponse` (SSE), `JSONLinesResponse`,
+  `RedirectResponse`
+- Background tasks run after the response is sent
+- `@cache_response` with ETag / `If-None-Match` conditional requests and `Cache-Control`
+
+**Middleware and security**
+- `BaseMiddleware` + compiled middleware stack; `CORSMiddleware` (incl. `allow_origin_regex`),
+  `TrustedHostMiddleware`, `GZipMiddleware`, `SecurityHeadersMiddleware`, `RequestIDMiddleware`,
+  `RateLimitMiddleware`
+- Signed session middleware (`SessionMiddleware`) with `request.session`
+- JWT auth, password hashing, multipart uploads (`UploadFile`, `MultipartForm`)
+
+**Protocols and tooling**
+- WebSockets (text / bytes / JSON, both directions)
+- OpenAPI 3.1 generation with Swagger and ReDoc
+- `HTTPClient` (httpx-based), `TestClient`, health checks, Prometheus metrics
+- Lifespan startup/shutdown handlers, custom exception handlers
+
+---
+
+## Installation
 
 ```bash
 pip install velocix
 ```
 
-### Core Dependencies
-- **orjson** - Fast JSON serialization
-- **msgspec** - Fast validation and serialization
-- **httptools** - HTTP request parsing
-- Any ASGI server (uvicorn, granian, hypercorn)
+Requires Python 3.10 or newer and an ASGI server:
+
+```bash
+pip install granian   # or: uvicorn, hypercorn
+```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```python
-from velocix import Velocix
+from typing import Annotated
+
+from msgspec import Struct
+
+from velocix import Query, TestClient, Velocix
 from velocix.core.response import JSONResponse
 
 app = Velocix()
 
+
 @app.get("/")
-async def hello():
+async def hello() -> dict:
     return {"message": "Hello World"}
 
+
 @app.get("/users/{user_id}")
-async def get_user(user_id: int):
-    return {"user_id": user_id}
+async def get_user(
+    user_id: int,
+    limit: Annotated[int, Query()] = 10,
+) -> dict:
+    return {"user_id": user_id, "limit": limit}
+
+
+class OrderIn(Struct):
+    customer: str
+    qty: int
+
+
+@app.post("/orders", status_code=201)
+async def create_order(order: OrderIn) -> dict:
+    return {"customer": order.customer, "qty": order.qty}
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
 ---
 
-## 🏗️ Code Structure
+## Performance
+
+All numbers are real measurements — see [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the
+full methodology and [benchmarks/](benchmarks/) for the reproducible harness. Velocix serves
+**byte-identical responses** to every framework compared, on the same routes, under the same
+load, on the same box.
+
+### Framework floor (in-process, no sockets)
+
+The pure framework cost — routing, parsing, dependency resolution, serialization — with the
+ASGI server removed. Measured on a 12-vCPU shared box, Python 3.13.
+
+| Route | req/s | per-request |
+|---|---|---|
+| `GET /users/42?limit=5` (path + query params) | ~163K | ~6.1 µs |
+| `GET /items` (7.9 KB JSON body) | ~51K | ~19.7 µs |
+
+### Live over real HTTP (granian, 4 workers)
+
+| Server | `/users` | `/items` |
+|---|---|---|
+| granian (Rust ASGI), 4 workers | ~121K req/s | ~92K req/s |
+| uvicorn (Python ASGI), 4 workers | ~22K req/s | ~21K req/s |
+
+### Cross-framework, live (granian 4 workers, identical routes, byte-identical responses)
+
+| Route | Velocix | Starlette | FastAPI |
+|---|---|---|---|
+| `GET /users/42?limit=5` | ~121K | ~80K | ~25K |
+| `POST /orders` (validated body) | ~80K | ~67K | ~34K |
+| `GET /items` (7.9 KB, 100 items) | ~92K | ~32K | ~4.7K |
+| `GET /slow` (5 ms simulated I/O) | ~17.5K | ~17.5K | ~17.8K |
+
+The `/items` gap is `orjson` (Rust) vs stdlib `json.dumps`; FastAPI's tax scales with
+validation and payload size (up to ~16x slower on list serialization, measured directly).
+Real I/O erases everything: with a 5 ms await all frameworks hit the same concurrency
+ceiling.
+
+### Load test: 7 frameworks under Locust (benchmarks/bench_compare)
+
+Saturation profile — 500 users, no think time, 45 s, 4 workers:
+
+| Framework | rps | avg | fails |
+|---|---|---|---|
+| Velocix | 2,092 | 36.6 ms | 0 |
+| Sanic | 2,082 | 37.1 ms | 0 |
+| BlackSheep | 2,022 | 38.0 ms | 0 |
+| Litestar | 1,903 | 40.3 ms | 0 |
+| Starlette | 1,877 | 40.9 ms | 0 |
+| Falcon | 1,844 | 41.7 ms | 0 |
+| FastAPI | 1,812 | 42.5 ms | 0 |
+
+Realistic profile — 100 users, think time 0.1-0.5 s, 60 s (client-throttled at ~318 rps;
+latency is the differentiator): Sanic 2.6 ms, Velocix 3.0 ms, FastAPI 3.7 ms.
+
+Single runs on a shared box: treat the ordering and margins as signal, exact rps as noise.
+Re-run with `bash benchmarks/bench_compare/run_all.sh`.
+
+---
+
+## Code Structure
 
 ```
 velocix/
-├── core/           # Core ASGI application and routing (based on Starlette patterns)
-├── http/           # HTTP utilities
-├── middleware/     # Middleware implementations
-├── security/       # Authentication and security utilities
-├── validation/     # Request validation (msgspec)
+├── core/           # ASGI app, router, request/response, dependencies, middleware
+├── http/           # HTTP client, multipart parsing
+├── security/       # JWT, password hashing, CORS, rate limiting
+├── validation/     # msgspec-based validation
 ├── websocket/      # WebSocket support
+├── openapi/        # OpenAPI 3.1 generation, Swagger / ReDoc
 ├── monitoring/     # Health checks and metrics
-└── testing/        # Test client utilities
+├── testing/        # TestClient
+└── config/         # Configuration helpers
 ```
 
 ---
 
-## 📚 Documentation
+## Documentation
 
-- **[API Reference](docs/API_REFERENCE.md)** - Complete API documentation
-- **[User Guide](docs/GUIDE.md)** - How to use Velocix features
-- **[Security Guide](docs/SECURITY.md)** - Security best practices
-- **[Internals](docs/INTERNALS.md)** - Architecture details
-
----
-
-## 🤝 Contributing
-
-This is a learning project, but if you find it useful or want to suggest improvements, feel free to open an issue or PR.
+- [API Reference](docs/API_REFERENCE.md)
+- [User Guide](docs/GUIDE.md)
+- [Performance](docs/PERFORMANCE.md)
+- [Security](docs/SECURITY.md)
+- [Internals](docs/INTERNALS.md)
 
 ---
 
-## 🙏 Acknowledgments
+## License
 
-This project is heavily inspired by:
-- **Starlette** - Most patterns and architecture are based on Starlette's design
-- **FastAPI** - For the elegant decorator-based API
-- **msgspec** - For fast validation
-- **orjson** - For efficient JSON serialization
-
-Special thanks to the authors of these frameworks for their excellent documentation and open-source code that made this learning project possible.
-
----
-
-## 📖 Learning Resources
-
-If you want to build something similar, I recommend:
-- Reading Starlette's source code (it's very well written)
-- Understanding the ASGI specification
-- Studying async Python patterns
-- Actually measuring performance instead of assuming optimizations work
-
----
-
-## 📄 License
-
-MIT License - See LICENSE file for details
-
----
-
-**Built as a learning exercise by a CSE student**
-
-*NOTE:This is an educational project with no affiliation to velocix ltd or any other comapnies using similar names*
-
-*feel free to read src code any time and contribute*
-
-*A minimal framework experiment - use Starlette or FastAPI for real projects.*
+MIT — see the [LICENSE](LICENSE) file.
