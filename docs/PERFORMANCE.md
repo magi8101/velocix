@@ -76,6 +76,11 @@ response construction.
 ## Optimization history
 
 Every entry below is a code change followed by a measured before/after.
+Rounds are chronological (each round's "before" is the previous round's
+"after"). Unless a row says otherwise, every **live** number below is
+granian (Rust ASGI), 4 workers, `c=100`, best of 3 — *not* the uvicorn
+row in the table above. The uvicorn 22K figure is only shown once, as a
+server comparison; it is not the baseline for any round delta.
 
 ### Round 1 — dependency resolution plan + fast query parsing
 
@@ -95,20 +100,6 @@ Every entry below is a code change followed by a measured before/after.
 | Live granian `/users` | 100.5K req/s | 114.3K req/s |
 | Live granian `/items` | 76.2K req/s | 83.4K req/s |
 
-### Round 3 — response-body cache (`@cache_response`)
-
-Added an opt-in `@cache_response(ttl)` decorator that caches the
-orjson-serialized body (the most expensive part of a JSON response), keyed by
-method + path + query string, with TTL expiry. The cached value is the
-pre-serialized bytes — cache hits skip the handler *and* orjson entirely
-(`JSONResponse.from_body`). Only caches dict/JSON responses; opt-in per route,
-so only handlers with request-independent output should use it.
-
-| Test | Uncached | Cached |
-|---|---|---|
-| In-process `/items`-style (7.9 KB) | 48.5K req/s | **379K req/s (7.8×)** |
-| Live granian `/items`-style, 4 workers | 85.9K req/s | **147.7K req/s (1.7×)** |
-
 ### Round 2 — request/response hot path
 
 - `Request.__init__` created a new class object per request
@@ -127,6 +118,20 @@ so only handlers with request-independent output should use it.
 | In-process `/items` | 40.0K req/s | 50.9K req/s (+27%) |
 | Live granian `/users` | 114.3K req/s | 120.9K req/s |
 | Live granian `/items` | 83.4K req/s | 92.2K req/s |
+
+### Round 3 — response-body cache (`@cache_response`)
+
+Added an opt-in `@cache_response(ttl)` decorator that caches the
+orjson-serialized body (the most expensive part of a JSON response), keyed by
+method + path + query string, with TTL expiry. The cached value is the
+pre-serialized bytes — cache hits skip the handler *and* orjson entirely
+(`JSONResponse.from_body`). Only caches dict/JSON responses; opt-in per route,
+so only handlers with request-independent output should use it.
+
+| Test | Uncached | Cached |
+|---|---|---|
+| In-process `/items`-style (7.9 KB) | 48.5K req/s | **379K req/s (7.8×)** |
+| Live granian `/items`-style, 4 workers | 85.9K req/s | **147.7K req/s (1.7×)** |
 
 ## What is NOT worth doing (yet)
 
