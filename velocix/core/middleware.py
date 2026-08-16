@@ -3,8 +3,12 @@ Middleware base class and optimized pipeline compilation.
 Starlette-inspired middleware architecture with call_next pattern.
 """
 
+import binascii
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+import itsdangerous
 
 from velocix.core.request import Request
 from velocix.core.response import Response
@@ -96,6 +100,109 @@ def build_middleware_stack(
     for middleware_class in reversed(middlewares):
         app = middleware_class(app)
     return app
+
+
+class SessionMiddleware(BaseHTTPMiddleware):
+    """
+    Signed session middleware (Starlette pattern).
+
+    Stores the session as a signed, timestamped JSON cookie. The session
+    dict is exposed via ``request.session`` and is written back to the
+    cookie only when it changes, so idle sessions expire naturally via
+    ``max_age``. Tampered or expired cookies load as an empty session.
+
+    Usage:
+        app.add_middleware(partial(SessionMiddleware, secret_key="..."))
+
+    Args:
+        app: Next middleware/handler in the chain
+        secret_key: Key used to sign session cookies (keep secret!)
+        session_cookie: Cookie name (default: "session")
+        max_age: Session lifetime in seconds (default: 14 days)
+        path: Cookie path (default: "/")
+        same_site: SameSite policy: strict | lax | none (default: lax)
+        https_only: Only send the cookie over HTTPS (default: False)
+        domain: Cookie domain (default: None -> host only)
+    """
+
+    def __init__(
+        self,
+        app: Callable[[Request], Awaitable[Response]],
+        secret_key: str,
+        session_cookie: str = "session",
+        max_age: int = 14 * 24 * 3600,
+        path: str = "/",
+        same_site: str = "lax",
+        https_only: bool = False,
+        domain: str | None = None,
+    ):
+        super().__init__(app)
+        self.signer = itsdangerous.TimestampSigner(str(secret_key))
+        self.session_cookie = session_cookie
+        self.max_age = max_age
+        self.path = path
+        self.same_site = same_site
+        self.https_only = https_only
+        self.domain = domain
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Load the session before the handler, write it back after."""
+        initial_session_was_empty = True
+        initial_session: dict[str, Any] = {}
+        cookie = request.cookies.get(self.session_cookie)
+        if cookie:
+            try:
+                data = self.signer.unsign(cookie.encode("utf-8"), max_age=self.max_age)
+                session = json.loads(data)
+                if isinstance(session, dict):
+                    initial_session = dict(session)
+                    initial_session_was_empty = False
+                else:
+                    session = {}
+            except (itsdangerous.BadSignature, binascii.Error, json.JSONDecodeError):
+                # Tampered, expired, or malformed cookie -> start fresh
+                session = {}
+        else:
+            session = {}
+        request.session = session
+
+        response = await call_next(request)
+
+        # Re-read the session: handlers may rebind request.session
+        session = request._session or {}
+
+        if session and initial_session_was_empty:
+            # Session was created during this request
+            response.set_cookie(
+                self.session_cookie,
+                self.signer.sign(json.dumps(session).encode("utf-8")).decode("utf-8"),
+                max_age=self.max_age,
+                path=self.path,
+                domain=self.domain,
+                secure=self.https_only,
+                httponly=True,
+                samesite=self.same_site,
+            )
+        elif session and not initial_session_was_empty:
+            # Rewrite only when the session changed, so idle sessions expire
+            if session != initial_session:
+                response.set_cookie(
+                    self.session_cookie,
+                    self.signer.sign(json.dumps(session).encode("utf-8")).decode("utf-8"),
+                    max_age=self.max_age,
+                    path=self.path,
+                    domain=self.domain,
+                    secure=self.https_only,
+                    httponly=True,
+                    samesite=self.same_site,
+                )
+        elif not session and not initial_session_was_empty:
+            # Session was cleared during this request
+            response.delete_cookie(self.session_cookie, path=self.path, domain=self.domain)
+
+        return response
 
 
 class CORSMiddleware(BaseHTTPMiddleware):
