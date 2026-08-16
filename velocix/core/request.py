@@ -64,6 +64,7 @@ class Request:
         "_stream_consumed",
         "_is_disconnected",
         "_handler",
+        "_plan",
     )
 
     def __init__(self, scope: dict[str, Any], receive: Any, send: Any = None) -> None:
@@ -94,6 +95,9 @@ class Request:
 
         # Resolved handler (set by the app before middleware runs)
         self._handler: Any = None
+
+        # Cached dependency-resolution plan (set by the app when needed)
+        self._plan: Any = None
 
         # Pre-cache frequently accessed immutable properties
         self._method: str = scope["method"]

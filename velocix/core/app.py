@@ -8,7 +8,11 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from velocix.core.depends import resolve_dependencies
+from velocix.core.depends import (
+    get_plan_and_needs_request,
+    get_resolution_plan,
+    resolve_dependencies,
+)
 from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
 from velocix.core.request import Request
@@ -203,12 +207,16 @@ class Velocix:
         send: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
         """Handle HTTP request"""
-        request = Request(scope, receive)
-        request.app = self
-
+        request: Request | None = None
         try:
-            response = await self._process_request(request)
+            handler, path_params = self.router.resolve(scope["method"], scope["path"])
+            if handler is None:
+                raise NotFound(f"Route not found: {scope['path']}")
+            response = await self._process_request(scope, receive, handler, path_params)
         except Exception as exc:
+            if request is None:
+                request = Request(scope, receive)
+                request.app = self
             response = await self._handle_exception(request, exc)
 
         await self._send_response(response, send)
@@ -244,53 +252,102 @@ class Velocix:
             except Exception:
                 pass
 
-    async def _process_request(self, request: Request) -> ResponseType:
+    async def _process_request(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        handler: Callable[..., Any],
+        path_params: dict[str, Any],
+    ) -> ResponseType:
         """Process HTTP request with error handling and middleware"""
+        request: Request | None = None
         try:
-            handler, path_params = self.router.resolve(request.method, request.path)
-
-            if handler is None:
-                raise NotFound(f"Route not found: {request.path}")
-
-            request.path_params = path_params
-            request._handler = handler
-
             if self._compiled_middleware is None:
                 self._compiled_middleware = build_middleware_stack(
                     self._execute_handler, self._middleware_stack
                 )
 
-            response = await self._compiled_middleware(request)
-            # Middleware should return ResponseType, but type system sees Any
-            if isinstance(response, (Response, JSONResponse, StreamingResponse)):
-                return response
-            else:
+            # One plan lookup per request: used for the needs-request decision,
+            # stashed on the Request for the middleware path, and passed straight
+            # to _execute_handler on the no-Request fast path.
+            plan, needs_request = get_plan_and_needs_request(handler)
+            if self._middleware_stack or needs_request:
+                request = self._init_request(scope, receive, handler, path_params)
+                request._plan = plan
+                response = await self._compiled_middleware(request)
+                # Middleware should return ResponseType, but type system sees Any
+                if isinstance(response, (Response, JSONResponse, StreamingResponse)):
+                    return response
                 return JSONResponse(
                     {"error": "Invalid response type from middleware"}, status_code=500
                 )
 
+            # Fast path: no middleware and the handler never touches Request
+            return await self._execute_handler(None, scope, handler, path_params, plan)
+
         except Exception as exc:
+            if request is None:
+                request = Request(scope, receive)
+                request.app = self
             return await self._handle_exception(request, exc)
 
-    async def _execute_handler(self, request: Request) -> ResponseType:
-        """Execute route handler with dependency injection"""
-        handler = request._handler
+    def _init_request(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        handler: Callable[..., Any],
+        path_params: dict[str, Any],
+    ) -> Request:
+        """Build a Request and attach the resolved handler/params"""
+        request = Request(scope, receive)
+        request.app = self
+        request.path_params = path_params
+        request._handler = handler
+        return request
 
+    async def _execute_handler(
+        self,
+        request: Request | None,
+        scope: dict[str, Any] | None = None,
+        handler: Callable[..., Any] | None = None,
+        path_params: dict[str, Any] | None = None,
+        plan: tuple[tuple[str, str, Any], ...] | None = None,
+    ) -> ResponseType:
+        """Execute route handler with dependency injection"""
         if handler is None:
-            # Fallback for handlers invoked outside the normal request path
-            handler, _ = self.router.resolve(request.method, request.path)
+            # Called through the middleware stack with a real Request
+            handler = request._handler  # type: ignore[union-attr]
             if handler is None:
-                raise NotFound()
+                # Fallback for handlers invoked outside the normal request path
+                handler, _ = self.router.resolve(request.method, request.path)  # type: ignore[union-attr]
+                if handler is None:
+                    raise NotFound()
+            path_params = request.path_params  # type: ignore[union-attr]
+
+        if plan is None:
+            plan = getattr(request, "_plan", None) if request is not None else None
+            if plan is None:
+                plan = get_resolution_plan(handler)
+
+        if request is not None:
+            method = request.method
+            path = request.path
+            query_string = request.query_string
+        else:
+            assert scope is not None
+            method = scope["method"]
+            path = scope["path"]
+            query_string = scope["query_string"]
 
         # Response cache hit: reuse the serialized body, skip handler + orjson
         cache_ttl = getattr(handler, "__response_cache_ttl__", None)
         if cache_ttl is not None:
-            cache_key = f"{request.method}:{request.path}?{request.query_string.decode('latin-1')}"
+            cache_key = f"{method}:{path}?{query_string.decode('latin-1')}"
             cached = self._response_cache.get(cache_key)
             if cached is not None and cached[0] > time.time():
                 return JSONResponse.from_body(cached[1], cached[2])
 
-        kwargs = await resolve_dependencies(handler, request, request.path_params)
+        kwargs = await resolve_dependencies(handler, request, path_params, plan)
 
         result = await handler(**kwargs)
 

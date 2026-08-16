@@ -72,9 +72,8 @@ class OpenAPIGenerator:
 
         # Also check route_cache for any additional routes
         if hasattr(router, "route_cache"):
-            for cache_key, cached_route in router.route_cache.items():
-                if ":" in cache_key:
-                    method, path = cache_key.split(":", 1)
+            for method, routes in router.route_cache.items():
+                for path, cached_route in routes.items():
                     handler = cached_route.handler
                     self._add_path_from_handler(paths, path, method.lower(), handler)
 
