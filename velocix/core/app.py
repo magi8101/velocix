@@ -469,6 +469,16 @@ class Velocix:
                 }
             )
 
+        # Run the response's background task after the body is fully sent.
+        # Exceptions are logged, never propagated: the response is already
+        # on the wire and there is nothing left to send.
+        background = response.background
+        if background is not None:
+            try:
+                await background()
+            except Exception:
+                logger.exception("Background task failed")
+
     def _setup_default_exception_handlers(self) -> None:
         """Setup default exception handlers"""
         pass

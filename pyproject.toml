@@ -56,6 +56,9 @@ target-version = ['py311', 'py312']
 profile = "black"
 line_length = 100
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
