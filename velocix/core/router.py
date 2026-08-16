@@ -111,8 +111,10 @@ class Router:
         self.static_routes: dict[str, dict[str, Callable]] = defaultdict(dict)
         self.dynamic_patterns: list[tuple] = []
         self.middleware_stack: list[Callable] = []
-        # Flat (method, path, handler) registration log for include_router
-        self._registered: list[tuple[str, str, Callable]] = []
+        # Flat (method, path, handler, name) registration log for include_router
+        self._registered: list[tuple[str, str, Callable, str | None]] = []
+        # name -> path template for reverse routing (first registration wins)
+        self._named_routes: dict[str, str] = {}
 
     def add_constraint(self, param_name: str, constraint: Callable):
         """Add parameter constraint for validation"""
@@ -146,6 +148,7 @@ class Router:
         path: str,
         handler: Callable,
         constraints: dict[str, Callable] | None = None,
+        name: str | None = None,
     ):
         """Add route with advanced optimization and validation"""
         # Input validation
@@ -177,7 +180,9 @@ class Router:
         if path != "/" and path.endswith("/"):
             path = path[:-1]
 
-        self._registered.append((method, path, handler))
+        self._registered.append((method, path, handler, name))
+        if name is not None and name not in self._named_routes:
+            self._named_routes[name] = path
 
         # Bump version so cached entries from before this mutation are invalidated
         self._routes_version += 1
@@ -221,74 +226,74 @@ class Router:
         pattern_key = f"{method}:{path}"
         self.bloom_filter.add(pattern_key)
 
-    def get(self, path: str):
+    def get(self, path: str, *, name: str | None = None):
         """GET route decorator"""
 
         def decorator(handler):
-            self.add_route("GET", path, handler)
+            self.add_route("GET", path, handler, name=name)
             return handler
 
         return decorator
 
-    def post(self, path: str):
+    def post(self, path: str, *, name: str | None = None):
         """POST route decorator"""
 
         def decorator(handler):
-            self.add_route("POST", path, handler)
+            self.add_route("POST", path, handler, name=name)
             return handler
 
         return decorator
 
-    def put(self, path: str):
+    def put(self, path: str, *, name: str | None = None):
         """PUT route decorator"""
 
         def decorator(handler):
-            self.add_route("PUT", path, handler)
+            self.add_route("PUT", path, handler, name=name)
             return handler
 
         return decorator
 
-    def delete(self, path: str):
+    def delete(self, path: str, *, name: str | None = None):
         """DELETE route decorator"""
 
         def decorator(handler):
-            self.add_route("DELETE", path, handler)
+            self.add_route("DELETE", path, handler, name=name)
             return handler
 
         return decorator
 
-    def patch(self, path: str):
+    def patch(self, path: str, *, name: str | None = None):
         """PATCH route decorator"""
 
         def decorator(handler):
-            self.add_route("PATCH", path, handler)
+            self.add_route("PATCH", path, handler, name=name)
             return handler
 
         return decorator
 
-    def head(self, path: str):
+    def head(self, path: str, *, name: str | None = None):
         """HEAD route decorator"""
 
         def decorator(handler):
-            self.add_route("HEAD", path, handler)
+            self.add_route("HEAD", path, handler, name=name)
             return handler
 
         return decorator
 
-    def options(self, path: str):
+    def options(self, path: str, *, name: str | None = None):
         """OPTIONS route decorator"""
 
         def decorator(handler):
-            self.add_route("OPTIONS", path, handler)
+            self.add_route("OPTIONS", path, handler, name=name)
             return handler
 
         return decorator
 
-    def websocket(self, path: str):
+    def websocket(self, path: str, *, name: str | None = None):
         """WebSocket route decorator"""
 
         def decorator(handler):
-            self.add_route("WEBSOCKET", path, handler)
+            self.add_route("WEBSOCKET", path, handler, name=name)
             return handler
 
         return decorator
@@ -301,8 +306,30 @@ class Router:
             prefix: Path prefix prepended to every route (e.g. "/api")
         """
         prefix = prefix.rstrip("/") if prefix else ""
-        for method, path, handler in router._registered:
-            self.add_route(method, prefix + path, handler)
+        for method, path, handler, name in router._registered:
+            self.add_route(method, prefix + path, handler, name=name)
+
+    def url_path_for(self, name: str, /, **path_params: Any) -> str:
+        """Build a URL path for a named route (reverse routing).
+
+        Args:
+            name: Route name registered via ``name=`` on a route decorator
+            **path_params: Values for the route's path placeholders
+
+        Returns:
+            Formatted path, e.g. ``/users/42`` for route ``/users/{user_id}``
+
+        Raises:
+            NoMatchFound: If no route with the given name exists
+        """
+        from urllib.parse import quote
+
+        from .exceptions import NoMatchFound
+
+        template = self._named_routes.get(name)
+        if template is None:
+            raise NoMatchFound(name, path_params)
+        return quote(template.format(**path_params))
 
     def resolve(self, method: str, path: str) -> tuple[Callable, dict[str, str]]:
         """Ultra-fast route resolution with caching"""
