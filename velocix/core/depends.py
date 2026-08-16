@@ -5,10 +5,13 @@ Provides efficient dependency resolution with caching and async support.
 
 import asyncio
 import inspect
+import types
 from collections.abc import Callable
-from typing import Any, TypeVar, get_type_hints
+from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
-from velocix.core.exceptions import HTTPException
+import msgspec
+
+from velocix.core.exceptions import HTTPException, ValidationError
 from velocix.core.params import Cookie, Header, Query
 
 
@@ -18,6 +21,27 @@ class _NoDefault:
 
 
 _NO_DEFAULT = _NoDefault()
+
+
+def _is_body_type(annotation: Any) -> bool:
+    """True if an annotation should be parsed from the request body.
+
+    Body types are msgspec Structs, dict/list/tuple (or unions of those,
+    e.g. `OrderIn | None`); scalar types are query parameters instead.
+    """
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        return any(_is_body_type(arg) for arg in get_args(annotation))
+    if origin is not None:
+        return origin in (dict, list, tuple)
+    if isinstance(annotation, type):
+        try:
+            if issubclass(annotation, msgspec.Struct):
+                return True
+            return issubclass(annotation, (dict, list, tuple))
+        except TypeError:
+            return False
+    return False
 
 
 def _extract_marker(annotation: Any) -> tuple[Any, Any] | None:
@@ -187,9 +211,19 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
                     default = marker.default
                 required = default is _NO_DEFAULT or default is Ellipsis
                 plan.append((param_name, kind, (marker, hint, default, required)))
-            # Plain parameter: path value if the name is in the route path,
-            # otherwise a query parameter (signature default or required).
-            # extra = (type_hint, default) where default is _NO_DEFAULT if absent
+            # Plain parameter: a Struct/dict/list annotation is parsed from
+            # the request body; otherwise it is a path value if the name is
+            # in the route path, or a query parameter (default or required).
+            # body extra = (type_hint, required, default)
+            # path extra = (type_hint, default) where default is _NO_DEFAULT
+            elif _is_body_type(hint):
+                required = param.default is inspect.Parameter.empty
+                default = (
+                    param.default
+                    if param.default is not inspect.Parameter.empty
+                    else None
+                )
+                plan.append((param_name, "body", (hint, required, default)))
             else:
                 default = (
                     param.default
@@ -220,7 +254,7 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         ):
             call_mode = 1
-        elif any(kind == "depends" for _, kind, _ in plan_tuple):
+        elif any(kind in ("depends", "body") for _, kind, _ in plan_tuple):
             call_mode = 3
         else:
             call_mode = 2
@@ -430,6 +464,26 @@ async def resolve_dependencies(
             continue
         if kind == "cookie":
             kwargs[param_name] = _resolve_cookie(request, param_name, extra)
+            continue
+
+        # Body parameter: parse the request body as the annotated type
+        if kind == "body":
+            hint, required, default = extra
+            body = await request.body()
+            if not body:
+                if required:
+                    raise ValidationError("Request body is required")
+                kwargs[param_name] = default
+            else:
+                try:
+                    kwargs[param_name] = msgspec.json.decode(body, type=hint)
+                except msgspec.ValidationError as exc:
+                    # msgspec 0.19 exposes only the message, which includes the
+                    # location (e.g. "Expected `int`, got `str` - at `$.qty`")
+                    raise ValidationError(
+                        "Request body validation failed",
+                        errors=[{"type": "validation_error", "msg": str(exc)}],
+                    ) from exc
             continue
 
         # Plain parameter: path value if in the route, else query fallback
