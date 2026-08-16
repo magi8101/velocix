@@ -22,8 +22,15 @@ python3 benchmarks/profile_inproc.py
 bash benchmarks/run_granian.sh
 ```
 
-## Comparing against Starlette / FastAPI
+## Comparing against other frameworks
 
-The comparison apps used for the cross-framework numbers are not committed
-(theirs need pinned versions to be meaningful); the methodology is: identical
-routes, byte-identical responses, same server, same load, best of 3.
+`benchmarks/bench_compare/` is a full Locust harness comparing Velocix against
+Starlette, FastAPI, Litestar, Falcon, BlackSheep, and Sanic — all serving
+byte-identical responses on 4 routes, under granian 4 workers. Two profiles:
+realistic (100 users, think time) and saturation (500 users, no think time).
+
+```bash
+bash benchmarks/bench_compare/run_all.sh   # whole battery, ~20 min
+bash benchmarks/bench_compare/run_sat.sh velocix
+bash benchmarks/bench_compare/run_real.sh velocix
+```
