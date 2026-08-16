@@ -8,6 +8,32 @@ import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar, get_type_hints
 
+from velocix.core.exceptions import HTTPException
+from velocix.core.params import Cookie, Header, Query
+
+
+# Sentinel for plain params without a signature default
+class _NoDefault:
+    __slots__ = ()
+
+
+_NO_DEFAULT = _NoDefault()
+
+
+def _extract_marker(annotation: Any) -> tuple[Any, Any] | None:
+    """Return (marker, real_type) if an Annotated[] annotation carries a
+    Query/Header/Cookie marker; None otherwise.
+
+    Supports the modern FastAPI style: `q: Annotated[str | None, Query()]`.
+    """
+    metadata = getattr(annotation, "__metadata__", None)
+    if not metadata:
+        return None
+    for meta in metadata:
+        if isinstance(meta, (Query, Header, Cookie)):
+            return meta, annotation.__origin__
+    return None
+
 # Signature cache for performance.
 # Entries store the callable itself alongside the cached value: holding a
 # strong reference pins the object's id(), so a recycled id() can never
@@ -79,12 +105,16 @@ def _get_signature(func: Callable[..., Any]) -> inspect.Signature:
 
 
 def _get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
-    """Get cached type hints (entry pins the callable to prevent id reuse)"""
+    """Get cached type hints (entry pins the callable to prevent id reuse).
+
+    include_extras=True keeps Annotated[] metadata so Query/Header/Cookie
+    markers can be extracted from annotations.
+    """
     func_id = id(func)
     entry = _type_hints_cache.get(func_id)
     if entry is None or entry[0] is not func:
         try:
-            hints = get_type_hints(func)
+            hints = get_type_hints(func, include_extras=True)
         except Exception:
             hints = {}
         _type_hints_cache[func_id] = (func, hints)
@@ -120,17 +150,58 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             # Skip self and cls parameters
             if param_name in ("self", "cls"):
                 continue
+            annotation = type_hints.get(param_name)
+            annotated = _extract_marker(annotation)
+            if annotated is not None:
+                marker, hint = annotated
+            else:
+                marker, hint = None, annotation
+
             # Inject request object
             if param_name == "request":
                 plan.append((param_name, "request", None))
             # Handle Depends() marker
             elif isinstance(param.default, Depends):
                 plan.append((param_name, "depends", param.default))
-            # Path parameter with type conversion
+            # Query/Header/Cookie markers, either as the default (classic
+            # style: `q: str | None = Query(None)`) or as Annotated metadata
+            # (modern style: `q: Annotated[str | None, Query()] = None`).
+            # extra = (marker, type_hint, default, required)
+            elif marker is not None or isinstance(param.default, (Query, Header, Cookie)):
+                if marker is None:
+                    marker = param.default
+                if isinstance(marker, Query):
+                    kind = "query"
+                elif isinstance(marker, Header):
+                    kind = "header"
+                else:
+                    kind = "cookie"
+                if annotated is not None:
+                    # Annotated style: requiredness from the signature
+                    default = (
+                        param.default
+                        if param.default is not inspect.Parameter.empty
+                        else _NO_DEFAULT
+                    )
+                else:
+                    default = marker.default
+                required = default is _NO_DEFAULT or default is Ellipsis
+                plan.append((param_name, kind, (marker, hint, default, required)))
+            # Plain parameter: path value if the name is in the route path,
+            # otherwise a query parameter (signature default or required).
+            # extra = (type_hint, default) where default is _NO_DEFAULT if absent
             else:
-                plan.append((param_name, "path", type_hints.get(param_name)))
+                default = (
+                    param.default
+                    if param.default is not inspect.Parameter.empty
+                    else _NO_DEFAULT
+                )
+                plan.append((param_name, "path", (hint, default)))
         plan_tuple = tuple(plan)
-        needs_request = any(kind in ("request", "depends") for _, kind, _ in plan_tuple)
+        # Every resolved param either needs the Request (request/depends/query/
+        # header/cookie, or a plain param that may fall back to query) — the
+        # empty plan is the only request-free case.
+        needs_request = bool(plan_tuple)
         cache_ttl = getattr(handler, "__response_cache_ttl__", None)
         status_code = getattr(handler, "__route_status_code__", None)
         response_model = getattr(handler, "__response_model__", None)
@@ -161,6 +232,73 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
     return entry[1][0]
 
 
+def _convert_type(raw: str, hint: Any) -> Any:
+    """Convert a raw string to the annotated type (lenient on failure)."""
+    if hint is None or hint is str:
+        return raw
+    try:
+        if hint is int:
+            return int(raw)
+        if hint is float:
+            return float(raw)
+        if hint is bool:
+            return raw.lower() in ("true", "1", "yes")
+    except (ValueError, AttributeError):
+        pass
+    return raw
+
+
+def _resolve_query(request: Any, name: str, extra: tuple[Query, Any, Any, bool]) -> Any:
+    """Resolve a Query-marked parameter (marker, hint, default, required)."""
+    marker, hint, default, required = extra
+    raw = request.query_params.get(marker.alias or name)
+    if raw is None:
+        if required:
+            raise HTTPException(422, f"Missing required query parameter '{name}'")
+        return default
+    return _convert_type(raw, hint)
+
+
+def _resolve_header(request: Any, name: str, extra: tuple[Header, Any, Any, bool]) -> Any:
+    """Resolve a Header-marked parameter (marker, hint, default, required)."""
+    marker, hint, default, required = extra
+    header_name = marker.alias or (
+        name.replace("_", "-") if marker.convert_underscores else name
+    )
+    raw = request.headers.get(header_name.lower().encode("latin-1"))
+    if raw is None:
+        if required:
+            raise HTTPException(422, f"Missing required header '{header_name}'")
+        return default
+    return _convert_type(raw.decode("latin-1"), hint)
+
+
+def _resolve_cookie(request: Any, name: str, extra: tuple[Cookie, Any, Any, bool]) -> Any:
+    """Resolve a Cookie-marked parameter (marker, hint, default, required)."""
+    marker, hint, default, required = extra
+    raw = request.cookies.get(marker.alias or name)
+    if raw is None:
+        if required:
+            raise HTTPException(422, f"Missing required cookie '{name}'")
+        return default
+    return _convert_type(raw, hint)
+
+
+def _resolve_plain(request: Any, name: str, extra: tuple[Any, Any], path_params: dict[str, Any]) -> Any:
+    """Resolve a plain parameter: path value if in the route, else query."""
+    hint, default = extra
+    if name in path_params:
+        return _convert_type(path_params[name], hint)
+    if request is None:
+        raise HTTPException(422, f"Missing required query parameter '{name}'")
+    raw = request.query_params.get(name)
+    if raw is None:
+        if default is _NO_DEFAULT:
+            raise HTTPException(422, f"Missing required query parameter '{name}'")
+        return default
+    return _convert_type(raw, hint)
+
+
 def resolve_kwargs(
     request: Any,
     path_params: dict[str, Any] | None,
@@ -169,36 +307,47 @@ def resolve_kwargs(
     """Build the handler kwargs synchronously for plans without Depends.
 
     The async resolve_dependencies() wraps this for Depends plans, where the
-    coroutine overhead is unavoidable. Path/request-only plans (the common
-    case) skip the coroutine entirely.
+    coroutine overhead is unavoidable. Path/request/query/header/cookie-only
+    plans (the common case) skip the coroutine entirely.
     """
     if not plan:
         return {}
     kwargs: dict[str, Any] = {}
     path_params = path_params or {}
     for param_name, kind, extra in plan:
-        # Inject request object
+        # request and plain-path params are the hot cases: check them first so
+        # common handlers pay one or two comparisons, not the full marker chain
         if kind == "request":
             kwargs[param_name] = request
-            continue
-        # Inject path parameters with type conversion
-        if param_name in path_params:
-            raw_value = path_params[param_name]
-            param_type = extra
-            if param_type is not None:
-                try:
-                    if param_type is int:
-                        kwargs[param_name] = int(raw_value)
-                    elif param_type is float:
-                        kwargs[param_name] = float(raw_value)
-                    elif param_type is bool:
-                        kwargs[param_name] = raw_value.lower() in ("true", "1", "yes")
-                    else:
-                        kwargs[param_name] = raw_value
-                except (ValueError, AttributeError):
-                    kwargs[param_name] = raw_value
+        elif kind == "path":
+            if param_name in path_params:
+                # Inline the conversion — runs on every request with a path
+                # param, so avoid helper call overhead
+                hint = extra[0]
+                raw = path_params[param_name]
+                if hint is int:
+                    try:
+                        kwargs[param_name] = int(raw)
+                    except (ValueError, AttributeError):
+                        kwargs[param_name] = raw
+                elif hint is float:
+                    try:
+                        kwargs[param_name] = float(raw)
+                    except (ValueError, AttributeError):
+                        kwargs[param_name] = raw
+                elif hint is bool:
+                    kwargs[param_name] = raw.lower() in ("true", "1", "yes")
+                else:
+                    kwargs[param_name] = raw
             else:
-                kwargs[param_name] = raw_value
+                # Plain param not in the route path: query fallback
+                kwargs[param_name] = _resolve_plain(request, param_name, extra, path_params)
+        elif kind == "query":
+            kwargs[param_name] = _resolve_query(request, param_name, extra)
+        elif kind == "header":
+            kwargs[param_name] = _resolve_header(request, param_name, extra)
+        elif kind == "cookie":
+            kwargs[param_name] = _resolve_cookie(request, param_name, extra)
     return kwargs
 
 
@@ -272,27 +421,19 @@ async def resolve_dependencies(
                 kwargs[param_name] = result
             continue
 
-        # Inject path parameters with type conversion
-        if param_name in path_params:
-            raw_value = path_params[param_name]
-            param_type = extra
+        # Query/Header/Cookie-marked parameters
+        if kind == "query":
+            kwargs[param_name] = _resolve_query(request, param_name, extra)
+            continue
+        if kind == "header":
+            kwargs[param_name] = _resolve_header(request, param_name, extra)
+            continue
+        if kind == "cookie":
+            kwargs[param_name] = _resolve_cookie(request, param_name, extra)
+            continue
 
-            if param_type is not None:
-                try:
-                    # Type conversion
-                    if param_type is int:
-                        kwargs[param_name] = int(raw_value)
-                    elif param_type is float:
-                        kwargs[param_name] = float(raw_value)
-                    elif param_type is bool:
-                        kwargs[param_name] = raw_value.lower() in ("true", "1", "yes")
-                    else:
-                        kwargs[param_name] = raw_value
-                except (ValueError, AttributeError):
-                    # If conversion fails, use raw value
-                    kwargs[param_name] = raw_value
-            else:
-                kwargs[param_name] = raw_value
+        # Plain parameter: path value if in the route, else query fallback
+        kwargs[param_name] = _resolve_plain(request, param_name, extra, path_params)
 
     return kwargs
 

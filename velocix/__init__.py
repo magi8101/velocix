@@ -36,6 +36,7 @@ from velocix.core.app import Velocix, cache_response
 from velocix.core.depends import Depends
 from velocix.core.exceptions import HTTPException
 from velocix.core.middleware import BaseMiddleware
+from velocix.core.params import Cookie, Header, Query
 from velocix.core.request import Request
 from velocix.core.response import (
     EventStreamResponse,
@@ -56,7 +57,7 @@ from velocix.http.client import HTTPClient
 # OpenAPI and Documentation
 from velocix.openapi.auto_docs import AutoDocRouter, enable_auto_docs
 from velocix.openapi.decorators import operation, parameter, response
-from velocix.openapi.decorators_style import Body, Path, Query, delete, get, patch, post, put
+from velocix.openapi.decorators_style import Body, Path, delete, get, patch, post, put
 from velocix.openapi.generator import OpenAPIGenerator
 from velocix.security.cors import CORSMiddleware
 
@@ -147,8 +148,11 @@ __all__ = [
     "delete",
     "patch",
     "Path",
-    "Query",
     "Body",
+    # Parameter markers
+    "Query",
+    "Header",
+    "Cookie",
     # Security
     "JWTManager",
     "JWTHandler",

@@ -43,6 +43,22 @@ def test_stale_plan_cache_entry_is_never_reused():
     assert plan == (("request", "request", None),)
 
 
+def test_repeated_plan_build_hits_cache():
+    """A second resolution for the same handler must not rebuild.
+
+    Regression: the plan-build loop was once dedented out of the cache-miss
+    branch, so a second call for the same handler hit the cache and crashed
+    on an undefined variable.
+    """
+
+    async def handler(request, user_id: int):
+        return {"user_id": user_id}
+
+    plan1 = depends.get_resolution_plan(handler)
+    plan2 = depends.get_resolution_plan(handler)
+    assert plan1 == plan2 == (("request", "request", None), ("user_id", "path", (int, depends._NO_DEFAULT)))
+
+
 def _cached_app(ttl: float = 60.0):
     app = Velocix()
 
