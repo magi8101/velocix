@@ -55,7 +55,7 @@ class Request:
         "_url",
         "_base_url",
         "path_params",
-        "state",
+        "_state",
         "app",
         "_method",
         "_path",
@@ -87,8 +87,8 @@ class Request:
         # Path parameters set by router
         self.path_params: dict[str, str] = scope.get("path_params", {})
 
-        # State object for middleware
-        self.state: _RequestState = _RequestState()
+        # State object for middleware (lazily created on first access)
+        self._state: _RequestState | None = None
 
         # Owning application (set by the ASGI app)
         self.app: Any = None
@@ -179,13 +179,19 @@ class Request:
         if self._query_params is None:
             if self._query_string:
                 # fast-query-parsers returns ordered (key, value) pairs;
-                # iterate in reverse so the first occurrence wins (stdlib
-                # parse_qs first-value pattern)
-                pairs = parse_query_string(self._query_string, "&")
-                self._query_params = {k: v for k, v in reversed(pairs)}
+                # reversed() then dict() keeps the first occurrence (stdlib
+                # parse_qs first-value pattern) with a C-speed dict build
+                self._query_params = dict(reversed(parse_query_string(self._query_string, "&")))
             else:
                 self._query_params = {}
         return self._query_params
+
+    @property
+    def state(self) -> _RequestState:
+        """Per-request state namespace (lazily allocated on first access)"""
+        if self._state is None:
+            self._state = _RequestState()
+        return self._state
 
     @property
     def cookies(self) -> dict[str, str]:

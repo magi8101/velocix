@@ -11,10 +11,11 @@ from typing import Any, TypeVar, get_type_hints
 # Signature cache for performance
 _sig_cache: dict[int, inspect.Signature] = {}
 _type_hints_cache: dict[int, dict[str, Any]] = {}
-# Precomputed resolution plan per handler: (plan, needs_request_flag)
+# Precomputed resolution plan per handler: (plan, needs_request, cache_ttl, call_mode)
 # plan: tuple of (param_name, kind, extra)
 # kind: "request" | "depends" | "path" ; extra: Depends instance or type hint
-_plan_cache: dict[int, tuple[tuple[tuple[str, str, Any], ...], bool]] = {}
+# call_mode: 0 = no args, 1 = positional request only, 2 = full kwargs resolution
+_plan_cache: dict[int, tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]] = {}
 
 T = TypeVar("T")
 
@@ -79,8 +80,8 @@ def get_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str, An
 
 def get_plan_and_needs_request(
     handler: Callable[..., Any],
-) -> tuple[tuple[tuple[str, str, Any], ...], bool]:
-    """One cached lookup returning (plan, needs_request_flag)."""
+) -> tuple[tuple[tuple[str, str, Any], ...], bool, float | None, int]:
+    """One cached lookup returning (plan, needs_request, cache_ttl, call_mode)."""
     func_id = id(handler)
     entry = _plan_cache.get(func_id)
     if entry is None:
@@ -112,9 +113,70 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
                 plan.append((param_name, "path", type_hints.get(param_name)))
         plan_tuple = tuple(plan)
         needs_request = any(kind in ("request", "depends") for _, kind, _ in plan_tuple)
-        entry = (plan_tuple, needs_request)
+        cache_ttl = getattr(handler, "__response_cache_ttl__", None)
+        # Fast call modes:
+        #   0: no args                    -> handler()
+        #   1: single positional request  -> handler(request)
+        #   2: path/request only          -> sync kwargs, no coroutine
+        #   3: has Depends                -> async resolve_dependencies
+        if not plan_tuple:
+            call_mode = 0
+        elif (
+            len(plan_tuple) == 1
+            and plan_tuple[0][1] == "request"
+            and sig.parameters.get("request") is not None
+            and sig.parameters["request"].kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ):
+            call_mode = 1
+        elif any(kind == "depends" for _, kind, _ in plan_tuple):
+            call_mode = 3
+        else:
+            call_mode = 2
+        entry = (plan_tuple, needs_request, cache_ttl, call_mode)
         _plan_cache[func_id] = entry
     return entry[0]
+
+
+def resolve_kwargs(
+    request: Any,
+    path_params: dict[str, Any] | None,
+    plan: tuple[tuple[str, str, Any], ...],
+) -> dict[str, Any]:
+    """Build the handler kwargs synchronously for plans without Depends.
+
+    The async resolve_dependencies() wraps this for Depends plans, where the
+    coroutine overhead is unavoidable. Path/request-only plans (the common
+    case) skip the coroutine entirely.
+    """
+    if not plan:
+        return {}
+    kwargs: dict[str, Any] = {}
+    path_params = path_params or {}
+    for param_name, kind, extra in plan:
+        # Inject request object
+        if kind == "request":
+            kwargs[param_name] = request
+            continue
+        # Inject path parameters with type conversion
+        if param_name in path_params:
+            raw_value = path_params[param_name]
+            param_type = extra
+            if param_type is not None:
+                try:
+                    if param_type is int:
+                        kwargs[param_name] = int(raw_value)
+                    elif param_type is float:
+                        kwargs[param_name] = float(raw_value)
+                    elif param_type is bool:
+                        kwargs[param_name] = raw_value.lower() in ("true", "1", "yes")
+                    else:
+                        kwargs[param_name] = raw_value
+                except (ValueError, AttributeError):
+                    kwargs[param_name] = raw_value
+            else:
+                kwargs[param_name] = raw_value
+    return kwargs
 
 
 async def resolve_dependencies(
