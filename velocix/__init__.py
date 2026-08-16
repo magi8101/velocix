@@ -36,7 +36,7 @@ from velocix.core.app import Velocix, cache_response
 from velocix.core.depends import Depends
 from velocix.core.exceptions import HTTPException
 from velocix.core.middleware import BaseMiddleware, SessionMiddleware
-from velocix.core.params import Cookie, Header, Query
+from velocix.core.params import Cookie, File, Form, Header, Query
 from velocix.core.request import Request
 from velocix.core.response import (
     EventStreamResponse,
@@ -54,6 +54,7 @@ from velocix.core.staticfiles import StaticFiles
 
 # HTTP Client
 from velocix.http.client import HTTPClient
+from velocix.http.multipart import MultipartForm, UploadFile
 
 # OpenAPI and Documentation
 from velocix.openapi.auto_docs import AutoDocRouter, enable_auto_docs
@@ -155,6 +156,11 @@ __all__ = [
     "Query",
     "Header",
     "Cookie",
+    "Form",
+    "File",
+    # Uploads
+    "UploadFile",
+    "MultipartForm",
     # Static files
     "StaticFiles",
     # Security
