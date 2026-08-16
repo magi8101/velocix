@@ -103,3 +103,58 @@ class Cookie:
 
     def __repr__(self) -> str:
         return f"Cookie(default={self.default!r})"
+
+
+class Form:
+    """Form-field parameter marker (multipart or urlencoded bodies).
+
+    Args:
+        default: Default value, or Ellipsis (`...`) to require the parameter
+        description: OpenAPI description
+        alias: Override the form-field key (defaults to the param name)
+    """
+
+    __slots__ = ("default", "description", "alias")
+
+    def __init__(
+        self,
+        default: Any = _REQUIRED,
+        *,
+        description: str = "",
+        alias: str | None = None,
+    ) -> None:
+        self.default = default
+        self.description = description
+        self.alias = alias
+
+    def __repr__(self) -> str:
+        return f"Form(default={self.default!r})"
+
+
+class File:
+    """Uploaded-file parameter marker (multipart bodies).
+
+    Injects an `UploadFile` for the named part; requires the request
+    content-type to be `multipart/form-data`.
+
+    Args:
+        default: Default value, or Ellipsis (`...`) to require the file
+        description: OpenAPI description
+        alias: Override the form-field key (defaults to the param name)
+    """
+
+    __slots__ = ("default", "description", "alias")
+
+    def __init__(
+        self,
+        default: Any = _REQUIRED,
+        *,
+        description: str = "",
+        alias: str | None = None,
+    ) -> None:
+        self.default = default
+        self.description = description
+        self.alias = alias
+
+    def __repr__(self) -> str:
+        return f"File(default={self.default!r})"

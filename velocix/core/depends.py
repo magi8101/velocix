@@ -12,7 +12,8 @@ from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 import msgspec
 
 from velocix.core.exceptions import HTTPException, ValidationError
-from velocix.core.params import Cookie, Header, Query
+from velocix.core.params import Cookie, File, Form, Header, Query
+from velocix.http.multipart import UploadFile
 
 
 # Sentinel for plain params without a signature default
@@ -54,7 +55,7 @@ def _extract_marker(annotation: Any) -> tuple[Any, Any] | None:
     if not metadata:
         return None
     for meta in metadata:
-        if isinstance(meta, (Query, Header, Cookie)):
+        if isinstance(meta, (Query, Header, Cookie, Form, File)):
             return meta, annotation.__origin__
     return None
 
@@ -187,19 +188,25 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             # Handle Depends() marker
             elif isinstance(param.default, Depends):
                 plan.append((param_name, "depends", param.default))
-            # Query/Header/Cookie markers, either as the default (classic
-            # style: `q: str | None = Query(None)`) or as Annotated metadata
-            # (modern style: `q: Annotated[str | None, Query()] = None`).
+            # Query/Header/Cookie/Form/File markers, either as the default
+            # (classic style: `q: str | None = Query(None)`) or as Annotated
+            # metadata (modern style: `q: Annotated[str | None, Query()] = None`).
             # extra = (marker, type_hint, default, required)
-            elif marker is not None or isinstance(param.default, (Query, Header, Cookie)):
+            elif marker is not None or isinstance(
+                param.default, (Query, Header, Cookie, Form, File)
+            ):
                 if marker is None:
                     marker = param.default
                 if isinstance(marker, Query):
                     kind = "query"
                 elif isinstance(marker, Header):
                     kind = "header"
-                else:
+                elif isinstance(marker, Cookie):
                     kind = "cookie"
+                elif isinstance(marker, Form):
+                    kind = "form"
+                else:
+                    kind = "file"
                 if annotated is not None:
                     # Annotated style: requiredness from the signature
                     default = (
@@ -254,7 +261,7 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         ):
             call_mode = 1
-        elif any(kind in ("depends", "body") for _, kind, _ in plan_tuple):
+        elif any(kind in ("depends", "body", "form", "file") for _, kind, _ in plan_tuple):
             call_mode = 3
         else:
             call_mode = 2
@@ -464,6 +471,35 @@ async def resolve_dependencies(
             continue
         if kind == "cookie":
             kwargs[param_name] = _resolve_cookie(request, param_name, extra)
+            continue
+
+        # Form-field parameter: parsed from urlencoded or multipart bodies
+        if kind == "form":
+            marker, hint, default, required = extra
+            raw = (await request.form()).get(marker.alias or param_name)
+            if raw is None:
+                if required:
+                    raise HTTPException(
+                        422, f"Missing required form field '{param_name}'"
+                    )
+                kwargs[param_name] = default
+            else:
+                kwargs[param_name] = _convert_type(raw, hint)
+            continue
+
+        # Uploaded-file parameter: parsed from multipart bodies
+        if kind == "file":
+            marker, hint, default, required = extra
+            raw = (await request.form()).get(marker.alias or param_name)
+            if isinstance(raw, UploadFile):
+                kwargs[param_name] = raw
+            elif not required:
+                kwargs[param_name] = default
+            else:
+                raise HTTPException(
+                    422,
+                    f"Missing required file '{param_name}' (multipart/form-data expected)",
+                )
             continue
 
         # Body parameter: parse the request body as the annotated type
