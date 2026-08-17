@@ -57,8 +57,11 @@ app = Velocix(
 @app.put("/path")           # PUT request
 @app.delete("/path")        # DELETE request
 @app.patch("/path")         # PATCH request
-@app.head("/path")          # HEAD request
-@app.options("/path")       # OPTIONS request
+
+# Multiple methods on one route
+@app.route("/path", methods={"GET", "POST"})
+async def multi(request):
+    return {"ok": True}
 
 # WebSocket route
 @app.websocket("/ws")
@@ -66,6 +69,14 @@ async def websocket_handler(websocket):
     await websocket.accept()
     # ... handle WebSocket communication
 ```
+
+**Route options** (all decorators accept these):
+
+- `status_code` — default status for non-`Response` returns (dict/str -> 200,
+  `None` -> 204; an explicit `Response` return wins)
+- `response_model` — a msgspec `Struct`; validates and filters the returned
+  dict and serializes via `msgspec`
+- `name` — route name for `request.url_for(name, ...)` reverse routing
 
 ### Path Parameters
 
@@ -87,6 +98,8 @@ async def get_review(item_id: int, review_id: int):
 
 ### Query Parameters
 
+Any handler parameter that is not a path parameter becomes a query parameter:
+
 ```python
 @app.get("/search")
 async def search(q: str, limit: int = 10, offset: int = 0):
@@ -97,6 +110,46 @@ async def search(q: str, limit: int = 10, offset: int = 0):
 - Automatic type conversion
 - Default values
 - Optional parameters (use `Optional[T]` or `T | None`)
+- Missing required parameter -> 422
+
+### Parameter Markers: Query, Header, Cookie, Form, File
+
+For explicit control over where a value comes from, use the markers. The
+`Annotated` style is preferred (mypy-clean); the classic `= Query(...)` style
+also works.
+
+```python
+from typing import Annotated
+from velocix import Cookie, File, Form, Header, Query, UploadFile
+
+@app.get("/users")
+async def list_users(
+    page: Annotated[int, Query()] = 1,
+    per_page: Annotated[int, Query(alias="per_page")] = 10,
+    user_agent: Annotated[str | None, Header()] = None,   # "user-agent" header
+    session_id: Annotated[str | None, Cookie()] = None,
+):
+    ...
+
+@app.post("/upload")
+async def upload(
+    title: Annotated[str, Form()],
+    doc: Annotated[UploadFile, File()],
+):
+    content = await doc.read()
+    ...
+```
+
+**Markers:**
+
+- `Query(default, *, alias)` — query-string parameter
+- `Header(default, *, alias, convert_underscores=True)` — request header;
+  `_` converts to `-` unless `convert_underscores=False`
+- `Cookie(default, *, alias)` — request cookie
+- `Form(default, *, alias)` — form field (urlencoded or multipart)
+- `File(default, *, alias)` — multipart file part -> `UploadFile`
+- Required (no default) + missing -> **422**; values convert to the annotated
+  type
 
 ### Request Body
 
@@ -131,10 +184,10 @@ async def get_user(user_id: int):
 ### Sub-Routers
 
 ```python
-from velocix.core.router import Router
+from velocix import Router
 
-# Create sub-router
-users_router = Router(prefix="/users", tags=["users"])
+# Create sub-router (prefix is applied at include time)
+users_router = Router()
 
 @users_router.get("/{user_id}")
 async def get_user(user_id: int):
@@ -144,9 +197,13 @@ async def get_user(user_id: int):
 async def create_user(name: str, email: str):
     return {"created": True}
 
-# Include in main app
-app.include_router(users_router)
+# Include in main app, optionally under a prefix
+app.include_router(users_router, prefix="/users")
 ```
+
+Named routes on a sub-router keep working after inclusion: the prefix is
+applied to the route path, and `request.url_for("user", ...)` returns the
+prefixed URL.
 
 ---
 
@@ -166,8 +223,23 @@ async def request_info(request: Request):
         "headers": dict(request.headers),      # Headers dict
         "cookies": request.cookies,            # Cookies dict
         "client": request.client,              # Client IP and port
+        "url": request.url,                    # Full URL string
+        "base_url": request.base_url,          # Scheme + host
     }
 ```
+
+#### `.url_for(name, **path_params)`
+Build a URL for a named route (reverse routing):
+```python
+@app.get("/items/{item_id}", name="item")
+async def get_item(request: Request, item_id: int):
+    return {"url": request.url_for("item", item_id=item_id)}
+# -> {"url": "http://host/items/7"}
+```
+
+Returns the absolute URL (base URL + path). Unknown names raise
+`velocix.NoMatchFound`; use `Router.url_path_for(name, **params)` for the
+path only.
 
 ### Request Methods
 
@@ -315,33 +387,52 @@ Response(
 
 ### Built-in Middleware
 
+Middleware classes are instantiated by the app with the wrapped handler, so
+configuration goes through `functools.partial`:
+
+```python
+from functools import partial
+
+app.add_middleware(partial(MiddlewareClass, option=value))
+```
+
 #### CompressionMiddleware
 ```python
+from functools import partial
 from velocix.middleware.compression import CompressionMiddleware
 
-app.add_middleware(CompressionMiddleware, minimum_size=1000)
+app.add_middleware(partial(CompressionMiddleware, minimum_size=1000))
 ```
 
 #### RequestIDMiddleware
 ```python
+from functools import partial
 from velocix.middleware.request_id import RequestIDMiddleware
 
-app.add_middleware(RequestIDMiddleware, header_name="X-Request-ID")
+app.add_middleware(partial(RequestIDMiddleware, header_name="X-Request-ID"))
 ```
 
 #### CORSMiddleware
 ```python
-from velocix.security.cors import CORSMiddleware
+from functools import partial
+from velocix import CORSMiddleware
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-    max_age=600
+    partial(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=True,
+        max_age=600,
+        allow_origin_regex=r"https://.*\.example\.com",  # optional
+    )
 )
 ```
+
+`allow_origin_regex` accepts a string or compiled `re.Pattern`; origins are
+allowed if they `fullmatch` it. Pass `allow_origins=[]` with a regex to allow
+regex-matched origins only.
 
 ### Custom Middleware
 
@@ -446,18 +537,62 @@ async def limited_route():
 ### CORS Configuration
 
 ```python
-from velocix.security.cors import CORSMiddleware
+from functools import partial
+from velocix import CORSMiddleware
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://example.com", "https://app.example.com"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
-    expose_headers=["X-Custom-Header"],
-    allow_credentials=True,
-    max_age=600
+    partial(
+        CORSMiddleware,
+        allow_origins=["https://example.com", "https://app.example.com"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=True,
+        max_age=600,
+        allow_origin_regex=r"https://.*\.example\.com",  # optional
+    )
 )
 ```
+
+`allow_origin_regex` accepts a string or compiled `re.Pattern`; an origin is
+allowed if it `fullmatch`es the pattern (checked after the `allow_origins`
+list). Pass `allow_origins=[]` with a regex to allow regex-matched origins
+only.
+
+### Session Middleware
+
+Signed, cookie-based sessions (Starlette-compatible):
+
+```python
+from functools import partial
+from velocix import SessionMiddleware
+
+app.add_middleware(partial(SessionMiddleware, secret_key="change-me", max_age=3600))
+
+@app.get("/counter")
+async def counter(request: Request):
+    request.session["count"] = request.session.get("count", 0) + 1
+    return {"count": request.session["count"]}
+```
+
+- `request.session` is a dict stored in a signed, timestamped cookie
+  (itsdangerous); tampered/expired cookies fall back to an empty session
+- The cookie is rewritten only when the session changes
+- Options: `session_cookie` (default `session`), `max_age`, `path`,
+  `same_site`, `https_only`, `domain`
+- Without the middleware, `request.session` raises `AttributeError`
+
+### Static Files
+
+```python
+from velocix import StaticFiles
+
+app.mount("/static", StaticFiles(directory="./public", html=True))
+```
+
+- Serves files with detected MIME types; `HEAD` supported; `html=True` serves
+  `index.html` for directories
+- Path traversal is blocked
+- `app.mount(path, asgi_app)` also accepts any ASGI application
 
 ---
 
