@@ -1,15 +1,13 @@
 #!/bin/bash
 # wrk2 load test for one framework, one route, three runs.
-# Usage: bash run_wrk2.sh <framework> <route> [rate] [POST]
+# Usage: bash run_wrk2.sh <framework> <route> [rate]
 #   framework: velocix | starlette | fastapi | litestar | falcon | blacksheep | sanic
 #   route:     e.g. /users/42?limit=5  or  /items
 #   rate:      wrk2 fixed request rate, default 1000
-#   4th arg:   POST sends the request body from post_orders.lua (for /orders)
 set -u
 FW=$1
 ROUTE=$2
 RATE=${3:-1000}
-METHOD=${4:-GET}
 cd "$(dirname "$0")"
 WRK="${WRK:-/home/user/tools/wrk2/wrk}"
 if [ ! -x "$WRK" ]; then WRK=/tmp/wrk2/wrk; fi
@@ -26,11 +24,7 @@ TAG=$(echo "$ROUTE" | tr '/?&.' '____')
 OUT=/tmp/wrk2_${FW}_${TAG}_R${RATE}.txt
 : > "$OUT"
 for run in 1 2 3; do
-  if [ "$METHOD" = "POST" ]; then
-    "$WRK" -t4 -c100 -d20s -R${RATE} -L -s post_orders.lua "http://127.0.0.1:8000${ROUTE}" >> "$OUT" 2>&1
-  else
-    "$WRK" -t4 -c100 -d20s -R${RATE} -L "http://127.0.0.1:8000${ROUTE}" >> "$OUT" 2>&1
-  fi
+  "$WRK" -t4 -c100 -d20s -R${RATE} -L "http://127.0.0.1:8000${ROUTE}" >> "$OUT" 2>&1
   echo "=== RUN $run END ===" >> "$OUT"
   sleep 1
 done
