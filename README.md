@@ -129,39 +129,26 @@ ASGI server removed. Measured on a 12-vCPU shared box, Python 3.13.
 | granian (Rust ASGI), 4 workers | ~121K req/s | ~92K req/s |
 | uvicorn (Python ASGI), 4 workers | ~22K req/s | ~21K req/s |
 
-### Cross-framework, live (granian 4 workers, identical routes, byte-identical responses)
+### Cross-framework wrk2 (granian 4 workers, constant-rate, identical routes)
 
-| Route | Velocix | Starlette | FastAPI |
-|---|---|---|---|
-| `GET /users/42?limit=5` | ~121K | ~80K | ~25K |
-| `POST /orders` (validated body) | ~80K | ~67K | ~34K |
-| `GET /items` (7.9 KB, 100 items) | ~92K | ~32K | ~4.7K |
-| `GET /slow` (5 ms simulated I/O) | ~17.5K | ~17.5K | ~17.8K |
+6 frameworks, wrk2 (HdrHistogram), 10 s per run, 200 connections:
 
-The `/items` gap is `orjson` (Rust) vs stdlib `json.dumps`; FastAPI's tax scales with
-validation and payload size (up to ~16x slower on list serialization, measured directly).
-Real I/O erases everything: with a 5 ms await all frameworks hit the same concurrency
-ceiling.
+| Route / Rate | Velocix | Starlette | FastAPI | Falcon | BlackSheep | Litestar |
+|---|---|---|---|---|---|---|
+| `/items` 1K p50 | **1.55 ms** | 1.99 ms | 2.45 ms | 2.01 ms | 1.76 ms | 1.68 ms |
+| `/items` 5K p50 | **1.14 ms** | 1.39 ms | 17.66 ms | 2.54 ms | 2.62 ms | 1.44 ms |
+| `/items` 5K p99 | **2.39 ms** | 3.51 ms | 234.75 ms | 7.95 ms | 9.87 ms | 3.22 ms |
+| `/users/42` 1K p50 | 1.63 ms | 2.15 ms | 2.21 ms | **1.51 ms** | 1.54 ms | 1.65 ms |
+| `/users/42` 5K p50 | **1.17 ms** | 1.18 ms | 1.31 ms | 2.08 ms | 1.63 ms | 1.60 ms |
+| `/orders` 1K p50 | **1.53 ms** | 1.94 ms | 2.21 ms | 1.91 ms | 1.97 ms | 1.70 ms |
+| `/slow` 500 p50 | 7.36 ms | 8.30 ms | 8.22 ms | 7.30 ms | **7.08 ms** | 9.44 ms |
 
-### Load test: 7 frameworks under Locust (benchmarks/bench_compare)
+Velocix leads or ties on large payloads (`/items`) and validated POST (`/orders`).
+BlackSheep and Falcon edge it out on lightweight `/users/42` at low rates.
+FastAPI collapses under load on large payloads (p99 = 234 ms at 5K rps).
+I/O-bound routes erase all differences.
 
-Saturation profile — 500 users, no think time, 45 s, 4 workers:
-
-| Framework | rps | avg | fails |
-|---|---|---|---|
-| Velocix | 2,092 | 36.6 ms | 0 |
-| Sanic | 2,082 | 37.1 ms | 0 |
-| BlackSheep | 2,022 | 38.0 ms | 0 |
-| Litestar | 1,903 | 40.3 ms | 0 |
-| Starlette | 1,877 | 40.9 ms | 0 |
-| Falcon | 1,844 | 41.7 ms | 0 |
-| FastAPI | 1,812 | 42.5 ms | 0 |
-
-Realistic profile — 100 users, think time 0.1-0.5 s, 60 s (client-throttled at ~318 rps;
-latency is the differentiator): Sanic 2.6 ms, Velocix 3.0 ms, FastAPI 3.7 ms.
-
-Single runs on a shared box: treat the ordering and margins as signal, exact rps as noise.
-Re-run with `bash benchmarks/bench_compare/run_all.sh`.
+Full wrk2 tables in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ---
 

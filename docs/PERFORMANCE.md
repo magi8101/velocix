@@ -133,55 +133,75 @@ so only handlers with request-independent output should use it.
 | In-process `/items`-style (7.9 KB) | 48.5K req/s | **379K req/s (7.8×)** |
 | Live granian `/items`-style, 4 workers | 85.9K req/s | **147.7K req/s (1.7×)** |
 
-### Round 4 — positional dispatch (call_mode 4)
+## wrk2 constant-rate benchmarks (6 frameworks)
 
-Added a fast dispatch path for handlers whose signature is only `(request,
-path_param)`. Instead of building a kwargs dict and splatting it with
-`handler(**kwargs)`, call_mode 4 builds a positional tuple and calls
-`handler(request, user_id)` directly. This uses CPython's vectorcall fast
-path, skipping the dict allocation + keyword-name mapping.
+Measured on a 12-vCPU shared box, Python 3.14, granian 4 workers, wrk2
+(constant-rate mode, 10 s per run, 200 connections, 4 threads). Every
+framework serves byte-identical payloads on identical routes — verified
+by the harness before each run.
 
-Measured: kwargs path = 289 ns vs positional = 155 ns (46% reduction in
-dispatch cost).
+### /items — GET, 100-item JSON payload (~7.9 KB)
 
-| Test | Before | After |
-|---|---|---|
-| In-process `/users` | ~163K req/s | ~175K req/s |
-| wrk2 `/users` p99.9 (R=1000) | 14.48 ms | 3.38 ms |
+| Target rps | Metric | Velocix | Starlette | FastAPI | Falcon | BlackSheep | Litestar |
+|---|---|---|---|---|---|---|---|
+| 1,000 | p50 | **1.55 ms** | 1.99 ms | 2.45 ms | 2.01 ms | 1.76 ms | 1.68 ms |
+| | p90 | **2.17 ms** | 4.07 ms | 3.80 ms | 5.27 ms | 2.48 ms | 2.35 ms |
+| | p99 | **2.72 ms** | 7.72 ms | 5.45 ms | 9.67 ms | 3.16 ms | 2.98 ms |
+| 2,000 | p50 | **1.29 ms** | 1.82 ms | 2.08 ms | 1.85 ms | 1.75 ms | 2.22 ms |
+| | p99 | **2.48 ms** | 5.83 ms | 5.22 ms | 6.59 ms | 6.04 ms | 7.23 ms |
+| 5,000 | p50 | **1.14 ms** | 1.39 ms | 17.66 ms | 2.54 ms | 2.62 ms | 1.44 ms |
+| | p99 | **2.39 ms** | 3.51 ms | 234.75 ms | 7.95 ms | 9.87 ms | 3.22 ms |
 
-### Round 5 — opt-in route metrics
+FastAPI's p50 collapses to 17.66 ms at 5K rps — its `jsonable_encoder` +
+pydantic validation chain cannot keep up. Velocix and Litestar stay flat.
 
-Removed the per-request `RouteMetrics` chain from the router hot path.
-`RouteMetrics` was never read anywhere in the codebase — `get_metrics()`
-was dead code, and `__route_metrics__` was only written to, never read.
+### /users/42 — GET, path param + int conversion
 
-Per-request cost removed:
-- `CachedRoute.cache_hits += 1` on every cache hit (attribute mutation)
-- `time.time()` called 3x on dynamic route first hit (1 redundant)
-- `RouteMetrics()` dataclass allocation on every unique dynamic route
+| Target rps | Metric | Velocix | Starlette | FastAPI | Falcon | BlackSheep | Litestar |
+|---|---|---|---|---|---|---|---|
+| 1,000 | p50 | 1.63 ms | 2.15 ms | 2.21 ms | **1.51 ms** | 1.54 ms | 1.65 ms |
+| | p99 | 4.24 ms | 5.68 ms | 8.84 ms | **2.69 ms** | 2.68 ms | 2.89 ms |
+| 2,000 | p50 | 1.60 ms | 1.38 ms | 1.78 ms | 1.61 ms | **1.32 ms** | 1.50 ms |
+| | p99 | 3.81 ms | 2.60 ms | 3.62 ms | 4.47 ms | **2.44 ms** | 2.76 ms |
+| 5,000 | p50 | **1.17 ms** | 1.18 ms | 1.31 ms | 2.08 ms | 1.63 ms | 1.60 ms |
+| | p99 | **2.40 ms** | 2.54 ms | 3.70 ms | 5.89 ms | 3.85 ms | 5.16 ms |
 
-| Test | Before | After |
-|---|---|---|
-| In-process `/users` interleaved A/B | 183K req/s | 194K req/s (+6%) |
+At low rates, Falcon and BlackSheep's simpler Request objects give them a
+slight edge. Velocix reclaims the lead at 5K rps where framework overhead
+dominates over per-request allocation.
 
-### Round 6 — bounded response cache + header scan
+### /orders — POST, JSON body parse + msgspec/pydantic validation
 
-Two fixes, both referenced from production frameworks:
+| Target rps | Metric | Velocix | Starlette | FastAPI | Falcon | BlackSheep | Litestar |
+|---|---|---|---|---|---|---|---|
+| 500 | p50 | 2.40 ms | 2.27 ms | 2.02 ms | **1.78 ms** | 2.31 ms | 1.98 ms |
+| | p99 | 6.69 ms | 6.46 ms | 4.01 ms | **3.36 ms** | 7.10 ms | 3.83 ms |
+| 1,000 | p50 | **1.53 ms** | 1.94 ms | 2.21 ms | 1.91 ms | 1.97 ms | 1.70 ms |
+| | p99 | **2.74 ms** | 5.39 ms | 7.80 ms | 4.65 ms | 5.25 ms | 3.04 ms |
+| 2,000 | p50 | 1.50 ms | 1.40 ms | 1.74 ms | **1.30 ms** | 1.54 ms | 1.84 ms |
+| | p99 | 4.28 ms | 3.09 ms | 3.33 ms | **2.48 ms** | 3.02 ms | 6.99 ms |
 
-1. **Bounded response cache** (pattern from Pallets/cachelib `SimpleCache._prune`):
-   `_response_cache` was unbounded — every unique query string created a
-   permanent entry. Added `_CACHE_MAX_SIZE` (1024) with eviction on insert:
-   sweep expired first, then evict oldest if still over threshold.
+### /slow — GET, 5 ms simulated I/O
 
-2. **Linear scan for If-None-Match** (pattern from Starlette `Headers`):
-   `_request_if_none_match` built a full `dict()` from scope headers just
-   to do one `.get()`. Replaced with linear scan of the header list.
-   Measured: 508ns dict vs 270ns linear at 15 headers (2x faster).
+| Metric | Velocix | Starlette | FastAPI | Falcon | BlackSheep | Litestar |
+|---|---|---|---|---|---|---|
+| p50 | 7.36 ms | 8.30 ms | 8.22 ms | 7.30 ms | **7.08 ms** | 9.44 ms |
+| p99 | 10.06 ms | 11.81 ms | 13.61 ms | 10.45 ms | **8.69 ms** | 13.96 ms |
 
-| Test | Before | After |
-|---|---|---|
-| In-process `/users` median | 4,714 ns | 4,237 ns (-10%) |
-| In-process `/users` p99 | 6,467 ns | 5,654 ns (-12.6%) |
+With I/O dominating, BlackSheep's lower per-request overhead edges ahead.
+Velocix and Falcon are within noise. FastAPI and Litestar pay extra for
+their middleware/dependency machinery even on handlers that don't use it.
+
+### Summary
+
+- Velocix leads or ties p50 on `/items` (all rates), `/orders` at 1K rps,
+  and `/users` at 5K rps. Its orjson + msgspec pipeline gives it the
+  tightest tail on large-payload routes.
+- BlackSheep and Falcon beat Velocix on small-payload `/users/42` at low
+  rates — their Request construction is lighter. The gap vanishes at 5K rps.
+- FastAPI's validation chain causes a p99 collapse at high rates on
+  large payloads (234 ms at 5K rps on `/items`).
+- I/O-bound routes erase all framework differences.
 
 ## What is NOT worth doing (yet)
 
