@@ -72,18 +72,26 @@ class WebSocketTestSession:
         json_str = orjson.dumps(data).decode()
         await self.send_text(json_str)
 
+    async def _receive_data(self) -> dict[str, Any]:
+        """Receive next data message, skipping protocol messages (accept/close)."""
+        _PROTOCOL_TYPES = {"websocket.accept", "websocket.close"}
+        while True:
+            message = await self.receive()
+            if message.get("type") not in _PROTOCOL_TYPES:
+                return message
+
     async def receive_text(self) -> str:
-        """Receive text message"""
-        message = await self.receive()
+        """Receive text message, skipping protocol messages"""
+        message = await self._receive_data()
         return str(message.get("text", ""))
 
     async def receive_bytes(self) -> bytes:
-        """Receive binary message"""
-        message = await self.receive()
+        """Receive binary message, skipping protocol messages"""
+        message = await self._receive_data()
         return bytes(message.get("bytes", b""))
 
     async def receive_json(self) -> Any:
-        """Receive JSON message"""
+        """Receive JSON message, skipping protocol messages"""
         import orjson
 
         text = await self.receive_text()
@@ -309,16 +317,17 @@ class TestClient:
         self, path: str, params: dict[str, str] | None = None
     ) -> WebSocketTestSession:
         """Connect to WebSocket endpoint"""
+        qs = b""
         if params:
-            query_string = urlencode(params)
-            path = f"{path}?{query_string}"
+            qs = urlencode(params).encode()
+            path = path.split("?")[0]
 
         session = WebSocketTestSession()
 
         scope = {
             "type": "websocket",
             "path": path,
-            "query_string": b"",
+            "query_string": qs,
             "headers": [],
             "server": ("testserver", 80),
             "client": ("testclient", 50000),
