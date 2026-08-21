@@ -227,14 +227,7 @@ def match_tree(self, path: str) -> tuple[callable, dict]:
 - **FastAPI**: Also uses tree-based routing (via Starlette)
 - **Express.js**: Layer-based matching similar to this
 
-### Bloom Filter (Registration only)
-
-The BloomFilter is populated at route registration time via `add_route()`
-but is not consulted on the hot path. It exists for potential future use
-(e.g., fast 404 rejection for unregistered paths) but the current `resolve()`
-method relies on the route cache and tree walk instead.
-
-### Layer 4: Route Cache (Version-validated)
+### Layer 3: Route Cache (Version-Validated)
 
 ```python
 def resolve(self, method: str, path: str):
@@ -253,13 +246,16 @@ def resolve(self, method: str, path: str):
             handler, {}, version=self._routes_version
         )
         return handler, {}
-
-    # Layer 2: Tree traversal (dynamic routes)
-    # Walk tree, capture params, cache result
-    handler, params = self._walk_tree(method, path)
-    self.route_cache[method][path] = CachedRoute(
-        handler, params.copy(), version=self._routes_version
-    )
+    
+    # Layer 2: Tree traversal
+    handler, params = self.match_tree(path)
+    if not handler:
+        raise HTTPException(404)
+    
+    # Cache result (with LRU eviction)
+    if len(self.route_cache) < 1024:
+        self.route_cache[cache_key] = (handler, params)
+    
     return handler, params
 ```
 
@@ -948,11 +944,14 @@ Complete flow from TCP connection to response, showing what happens at each laye
    
 5. Router.resolve(method='GET', path='/users/123')
    ↓
-   a. Check route_cache[method][path] → cache hit (version match)
-      Return (handler, params) in ~160ns
-   b. On cache miss: static_routes lookup (O(1) dict) or tree walk
-   c. Cache result with CachedRoute(version=_routes_version)
-   Return: (handler=get_user, params={'user_id': '123'})
+   a. Check route cache: "GET:/users/123" → cache miss
+   b. Check static routes: not found
+   c. Traverse route tree:
+      - Match 'users' → static segment
+      - Match '123' → param segment {user_id}
+      - Found handler: get_user(user_id: int)
+   e. Cache result for next request
+   f. Return: (handler=get_user, params={'user_id': '123'})
    
 6. Plan Lookup (get_plan_and_needs_request)
    ↓
@@ -1136,14 +1135,7 @@ def get_user(user_id: int):  # Auto-converts and validates
 
 ### From BlackSheep
 
-**1. Bloom Filters for Routing**
-```python
-if path not in self.bloom_filter:
-    raise HTTPException(404)
-```
-**Why adopted**: BlackSheep showed bloom filters give ~100x faster 404 responses. Critical for APIs under attack/scanning. Tiny memory cost (~10KB) for huge win.
-
-**2. Route Caching**
+**1. Route Caching**
 ```python
 self.route_cache[cache_key] = (handler, params)
 ```

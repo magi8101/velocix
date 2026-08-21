@@ -1,8 +1,7 @@
 """
-Optimized Velocix Router with caching, bloom filters, and advanced routing
+Optimized Velocix Router with caching and advanced routing
 """
 
-import math
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -18,32 +17,6 @@ class HandlerProtocol(Protocol):
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-class BloomFilter:
-    """Memory-efficient bloom filter for route existence checking"""
-
-    def __init__(self, capacity: int = 10000, error_rate: float = 0.001):
-        self.capacity = capacity
-        self.error_rate = error_rate
-        self.bit_array_size = int(-(capacity * math.log(error_rate)) / (math.log(2) ** 2))
-        self.hash_count = int((self.bit_array_size / capacity) * math.log(2))
-        self.bit_array = bytearray(self.bit_array_size)
-
-    def _hash(self, item: str, seed: int) -> int:
-        return hash(f"{item}:{seed}") % self.bit_array_size
-
-    def add(self, item: str):
-        for i in range(self.hash_count):
-            index = self._hash(item, i)
-            self.bit_array[index // 8] |= 1 << (index % 8)
-
-    def contains(self, item: str) -> bool:
-        for i in range(self.hash_count):
-            index = self._hash(item, i)
-            if not (self.bit_array[index // 8] & (1 << (index % 8))):
-                return False
-        return True
-
-
 @dataclass
 class CachedRoute:
     """Cached route with TTL"""
@@ -53,6 +26,9 @@ class CachedRoute:
     created_at: float = field(default_factory=time.time)
     ttl: float = 300.0  # 5 minutes
     version: int = 0
+
+    def is_valid(self) -> bool:
+        return time.time() - self.created_at < self.ttl
 
 
 @dataclass
@@ -81,7 +57,6 @@ class Router:
         self.root = RouteNode()
         self.route_cache: dict[str, dict[str, CachedRoute]] = defaultdict(dict)
         self._routes_version: int = 0
-        self.bloom_filter = BloomFilter()
         self.method_trees: dict[str, RouteNode] = {
             "GET": RouteNode(),
             "POST": RouteNode(),
@@ -175,7 +150,6 @@ class Router:
         if "{" not in path:
             self.static_routes[method][path] = handler
             self.route_cache[method][path] = CachedRoute(handler, {}, version=self._routes_version)
-            self.bloom_filter.add(f"{method}:{path}")
             return
 
         # Build route tree
@@ -206,9 +180,7 @@ class Router:
         current.is_endpoint = True
         current.methods.add(method)
 
-        # Add to bloom filter
-        pattern_key = f"{method}:{path}"
-        self.bloom_filter.add(pattern_key)
+
 
     def get(self, path: str, *, name: str | None = None):
         """GET route decorator"""
@@ -324,7 +296,7 @@ class Router:
         if by_method is not None:
             cached = by_method.get(path)
             if cached is not None and cached.version == self._routes_version:
-                return cached.handler, cached.params
+                    return cached.handler, cached.params
 
         # Check static routes first (fastest path)
         if method in self.static_routes and path in self.static_routes[method]:
@@ -387,7 +359,6 @@ class Router:
                 raise NotFound(f"Route not found: {path}")
             handler = route_handler
 
-            # Cache result
             self.route_cache[method][path] = CachedRoute(
                 handler,
                 params.copy(),
@@ -448,4 +419,10 @@ class Router:
         """Add middleware to stack"""
         self.middleware_stack.append(middleware)
 
+    def get_metrics(self) -> dict[str, Any]:
+        """Get router performance metrics"""
+        return {
+            "total_routes": len(self._registered),
+            "cache_size": sum(len(routes) for routes in self.route_cache.values()),
+        }
 
