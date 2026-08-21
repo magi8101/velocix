@@ -130,6 +130,7 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
@@ -140,6 +141,7 @@ class Velocix:
             methods: HTTP methods to register
             status_code: Default status for non-Response handler returns
             response_model: msgspec Struct used to validate/filter dict returns
+            response_class: Response class used to wrap non-Response return values
             name: Route name for reverse routing via ``request.url_for()``
         """
 
@@ -151,6 +153,8 @@ class Velocix:
                 handler.__route_status_code__ = status_code  # type: ignore[attr-defined]
             if response_model is not None:
                 handler.__response_model__ = response_model  # type: ignore[attr-defined]
+            if response_class is not None:
+                handler.__route_response_class__ = response_class  # type: ignore[attr-defined]
             return handler
 
         return decorator
@@ -161,11 +165,13 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for GET routes"""
         return self.route(
-            path, {"GET"}, status_code=status_code, response_model=response_model, name=name
+            path, {"GET"}, status_code=status_code, response_model=response_model,
+            response_class=response_class, name=name
         )
 
     def post(
@@ -174,11 +180,13 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for POST routes"""
         return self.route(
-            path, {"POST"}, status_code=status_code, response_model=response_model, name=name
+            path, {"POST"}, status_code=status_code, response_model=response_model,
+            response_class=response_class, name=name
         )
 
     def put(
@@ -187,11 +195,13 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PUT routes"""
         return self.route(
-            path, {"PUT"}, status_code=status_code, response_model=response_model, name=name
+            path, {"PUT"}, status_code=status_code, response_model=response_model,
+            response_class=response_class, name=name
         )
 
     def delete(
@@ -200,11 +210,13 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for DELETE routes"""
         return self.route(
-            path, {"DELETE"}, status_code=status_code, response_model=response_model, name=name
+            path, {"DELETE"}, status_code=status_code, response_model=response_model,
+            response_class=response_class, name=name
         )
 
     def patch(
@@ -213,11 +225,13 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PATCH routes"""
         return self.route(
-            path, {"PATCH"}, status_code=status_code, response_model=response_model, name=name
+            path, {"PATCH"}, status_code=status_code, response_model=response_model,
+            response_class=response_class, name=name
         )
 
     def websocket(
@@ -430,6 +444,7 @@ class Velocix:
                 call_mode,
                 status_code,
                 response_model,
+                response_class,
             ) = get_plan_and_needs_request(handler)
             if needs_request:
                 request = self._init_request(scope, receive, handler, path_params)
@@ -443,6 +458,7 @@ class Velocix:
                     call_mode,
                     status_code,
                     response_model,
+                    response_class,
                 )
             return await self._execute_handler(
                 None,
@@ -454,6 +470,7 @@ class Velocix:
                 call_mode,
                 status_code,
                 response_model,
+                response_class,
             )
 
         except Exception as exc:
@@ -487,6 +504,7 @@ class Velocix:
         call_mode: int = 2,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
     ) -> ResponseType:
         """Execute route handler with dependency injection"""
         if handler is None:
@@ -503,7 +521,7 @@ class Velocix:
             entry = getattr(request, "_plan", None) if request is not None else None
             if entry is None:
                 entry = get_plan_and_needs_request(handler)
-            plan, _, cache_ttl, call_mode, status_code, response_model = entry
+            plan, _, cache_ttl, call_mode, status_code, response_model, response_class = entry
 
         # Response cache hit: reuse the serialized body, skip handler + orjson.
         # method/path/query are only needed to build the cache key, so defer
@@ -566,30 +584,40 @@ class Velocix:
         # status_code/response_model are route-decorator defaults; an explicit
         # Response return always wins (its own status/body are authoritative).
         response: ResponseType
+        resp_class = response_class or JSONResponse
         if isinstance(result, dict):
             if response_model is not None:
                 converted = msgspec.convert(result, type=response_model)
-                response = JSONResponse.from_body(
-                    msgspec.json.encode(converted), status_code=status_code or 200
-                )
+                if resp_class is JSONResponse:
+                    response = JSONResponse.from_body(
+                        msgspec.json.encode(converted), status_code=status_code or 200
+                    )
+                else:
+                    response = resp_class(converted, status_code=status_code or 200)
             else:
-                response = JSONResponse(result, status_code=status_code or 200)
+                response = resp_class(result, status_code=status_code or 200)
         elif isinstance(result, Response):
             response = result
         elif isinstance(result, StreamingResponse):
             response = result
         elif isinstance(result, str):
-            response = Response(result, media_type="text/plain", status_code=status_code or 200)
+            if response_class is not None:
+                response = response_class(result, status_code=status_code or 200)
+            else:
+                response = Response(result, media_type="text/plain", status_code=status_code or 200)
         elif result is None:
             response = Response(b"", status_code=status_code or 204)
         else:
             if response_model is not None:
                 converted = msgspec.convert(result, type=response_model)
-                response = JSONResponse.from_body(
-                    msgspec.json.encode(converted), status_code=status_code or 200
-                )
+                if resp_class is JSONResponse:
+                    response = JSONResponse.from_body(
+                        msgspec.json.encode(converted), status_code=status_code or 200
+                    )
+                else:
+                    response = resp_class(converted, status_code=status_code or 200)
             else:
-                response = JSONResponse(result, status_code=status_code or 200)
+                response = resp_class(result, status_code=status_code or 200)
 
         # Cache the serialized body only for dict/JSON responses. Compute the
         # ETag once at store time (xxh64 of the exact bytes) so hits never

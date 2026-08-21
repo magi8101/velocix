@@ -26,7 +26,7 @@ def test_stale_plan_cache_entry_is_never_reused():
     # (simulates the id()-recycling scenario deterministically).
     depends._plan_cache[id(handler_b)] = (
         handler_a,
-        ((("request", "request", None),), True, 60.0, 1, 201, None),
+        ((("request", "request", None),), True, 60.0, 1, 201, None, None),
     )
 
     (
@@ -36,10 +36,12 @@ def test_stale_plan_cache_entry_is_never_reused():
         call_mode,
         status_code,
         response_model,
+        response_class,
     ) = depends.get_plan_and_needs_request(handler_b)
     assert cache_ttl is None  # rebuilt from handler_b, not the stale entry
     assert status_code is None
     assert response_model is None
+    assert response_class is None
     assert plan == (("request", "request", None),)
 
 
