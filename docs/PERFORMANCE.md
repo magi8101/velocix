@@ -224,6 +224,45 @@ Based on profiles, not vibes:
   measurable gain on this workload and the remaining pure-Python cost is
   already small.
 
+## Head-to-Head: Velocix vs Starlette (direct ASGI)
+
+Measured with direct ASGI calls (no HTTP server), same payloads, same routes.
+Starlette's cost comes from: regex routing per request, unconditional Request
+creation, `jsonable_encoder` + `json.dumps` for responses.
+
+| Route | Velocix | Starlette | Speedup |
+|---|---|---|---|
+| `/users/{id}` (path + query) | 4,237 ns | 14,140 ns | **3.3x** |
+| `/items` (7.9 KB JSON) | 15,943 ns | 65,656 ns | **4.1x** |
+| `/orders` (POST + validation) | 5,179 ns | 13,468 ns | **2.6x** |
+
+Where Velocix's time goes vs Starlette's:
+- Routing: cache hit ~160ns vs regex+dict ~4,500ns
+- Request: lazy (0ns if unused) vs unconditional ~1,700ns
+- Response: orjson ~2,500ns vs jsonable_encoder+json.dumps ~12,000ns
+
+## wrk2 Benchmark Harness
+
+The `benchmarks/bench_compare/` directory contains a wrk2-based harness for
+fixed-rate latency measurement across 7 frameworks.
+
+```bash
+# Run full battery: all frameworks, all routes, both rates
+bash benchmarks/bench_compare/run_wrk2_all.sh
+
+# Run single framework
+bash benchmarks/bench_compare/run_wrk2.sh velocix GET /users/42?limit=5 1000 3
+```
+
+Results (granian 4 workers, R=1000, best of 3):
+
+| Route | Framework | p50 | p99.9 |
+|---|---|---|---|
+| `/users` | Velocix | 1.63 ms | 7.15 ms |
+| `/users` | Starlette | 1.98 ms | 18.45 ms |
+| `/orders` POST | Velocix | 1.70 ms | 3.32 ms |
+| `/items` | Velocix | 1.85 ms | 2.59 ms |
+
 ## Reproducing
 
 The bench apps, load runners, and profiler harnesses used for these numbers

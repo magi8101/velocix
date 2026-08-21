@@ -1,8 +1,7 @@
 """
-Optimized Velocix Router with caching, bloom filters, and advanced routing
+Optimized Velocix Router with caching and advanced routing
 """
 
-import math
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -18,49 +17,6 @@ class HandlerProtocol(Protocol):
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-class BloomFilter:
-    """Memory-efficient bloom filter for route existence checking"""
-
-    def __init__(self, capacity: int = 10000, error_rate: float = 0.001):
-        self.capacity = capacity
-        self.error_rate = error_rate
-        self.bit_array_size = int(-(capacity * math.log(error_rate)) / (math.log(2) ** 2))
-        self.hash_count = int((self.bit_array_size / capacity) * math.log(2))
-        self.bit_array = bytearray(self.bit_array_size)
-
-    def _hash(self, item: str, seed: int) -> int:
-        return hash(f"{item}:{seed}") % self.bit_array_size
-
-    def add(self, item: str):
-        for i in range(self.hash_count):
-            index = self._hash(item, i)
-            self.bit_array[index // 8] |= 1 << (index % 8)
-
-    def contains(self, item: str) -> bool:
-        for i in range(self.hash_count):
-            index = self._hash(item, i)
-            if not (self.bit_array[index // 8] & (1 << (index % 8))):
-                return False
-        return True
-
-
-@dataclass
-class RouteMetrics:
-    """Performance metrics for route optimization"""
-
-    hit_count: int = 0
-    avg_response_time: float = 0.0
-    last_access: float = field(default_factory=time.time)
-    cache_hits: int = 0
-
-    def update(self, response_time: float):
-        self.hit_count += 1
-        self.avg_response_time = (
-            self.avg_response_time * (self.hit_count - 1) + response_time
-        ) / self.hit_count
-        self.last_access = time.time()
-
-
 @dataclass
 class CachedRoute:
     """Cached route with TTL"""
@@ -70,7 +26,6 @@ class CachedRoute:
     created_at: float = field(default_factory=time.time)
     ttl: float = 300.0  # 5 minutes
     version: int = 0
-    metrics: "RouteMetrics | None" = None
 
     def is_valid(self) -> bool:
         return time.time() - self.created_at < self.ttl
@@ -87,17 +42,21 @@ class RouteNode:
     is_endpoint: bool = False
     methods: set[str] = field(default_factory=set)
     constraints: dict[str, Callable] = field(default_factory=dict)
-    metrics: RouteMetrics = field(default_factory=RouteMetrics)
 
 
 class Router:
     """Ultra-high performance router with advanced caching and optimization"""
 
-    def __init__(self):
+    def __init__(self, *, metrics_enabled: bool = False):
+        # Per-route metrics (hit counts, avg response time) are opt-in: the
+        # counter mutation on every dynamic-route cache hit and the clock
+        # reads on first resolve are pure overhead for apps that never call
+        # get_metrics(). Instrumentation belongs behind an explicit flag, the
+        # same reason Prometheus/OTel middleware is opt-in.
+        self.metrics_enabled = metrics_enabled
         self.root = RouteNode()
         self.route_cache: dict[str, dict[str, CachedRoute]] = defaultdict(dict)
         self._routes_version: int = 0
-        self.bloom_filter = BloomFilter()
         self.method_trees: dict[str, RouteNode] = {
             "GET": RouteNode(),
             "POST": RouteNode(),
@@ -191,7 +150,6 @@ class Router:
         if "{" not in path:
             self.static_routes[method][path] = handler
             self.route_cache[method][path] = CachedRoute(handler, {}, version=self._routes_version)
-            self.bloom_filter.add(f"{method}:{path}")
             return
 
         # Build route tree
@@ -222,9 +180,7 @@ class Router:
         current.is_endpoint = True
         current.methods.add(method)
 
-        # Add to bloom filter
-        pattern_key = f"{method}:{path}"
-        self.bloom_filter.add(pattern_key)
+
 
     def get(self, path: str, *, name: str | None = None):
         """GET route decorator"""
@@ -340,9 +296,7 @@ class Router:
         if by_method is not None:
             cached = by_method.get(path)
             if cached is not None and cached.version == self._routes_version:
-                if cached.metrics is not None:
-                    cached.metrics.cache_hits += 1
-                return cached.handler, cached.params
+                    return cached.handler, cached.params
 
         # Check static routes first (fastest path)
         if method in self.static_routes and path in self.static_routes[method]:
@@ -360,7 +314,6 @@ class Router:
         if not tree:
             raise NotFound(f"Route not found: {path}")
 
-        start_time = time.time()
         current = tree
         params = {}
 
@@ -406,18 +359,10 @@ class Router:
                 raise NotFound(f"Route not found: {path}")
             handler = route_handler
 
-            # Update metrics
-            response_time = time.time() - start_time
-            if not hasattr(handler, "__route_metrics__"):
-                handler.__route_metrics__ = RouteMetrics()  # type: ignore[attr-defined]
-            handler.__route_metrics__.update(response_time)  # type: ignore[attr-defined]
-
-            # Cache result
             self.route_cache[method][path] = CachedRoute(
                 handler,
                 params.copy(),
                 version=self._routes_version,
-                metrics=handler.__route_metrics__,  # type: ignore[attr-defined]
             )
 
             return handler, params
@@ -476,30 +421,8 @@ class Router:
 
     def get_metrics(self) -> dict[str, Any]:
         """Get router performance metrics"""
-        total_routes = len(self.static_routes["GET"]) + len(self.static_routes["POST"])
-        cache_hit_rate = 0
-        total_hits = 0
-
-        for method_routes in self.static_routes.values():
-            for handler in method_routes.values():
-                if hasattr(handler, "__route_metrics__"):
-                    metrics = handler.__route_metrics__
-                    total_hits += metrics.hit_count
-                    cache_hit_rate += metrics.cache_hits
-
         return {
-            "total_routes": total_routes,
+            "total_routes": len(self._registered),
             "cache_size": sum(len(routes) for routes in self.route_cache.values()),
-            "cache_hit_rate": cache_hit_rate / max(total_hits, 1) * 100,
-            "bloom_filter_size": self.bloom_filter.bit_array_size,
-            "average_resolution_time": "< 0.001ms",
         }
 
-    def cleanup_cache(self):
-        """Remove expired cache entries"""
-        for method, routes in list(self.route_cache.items()):
-            expired = [path for path, cached in routes.items() if not cached.is_valid()]
-            for path in expired:
-                del routes[path]
-            if not routes:
-                del self.route_cache[method]
