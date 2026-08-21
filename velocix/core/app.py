@@ -15,6 +15,7 @@ from velocix.core.depends import (
     get_plan_and_needs_request,
     resolve_dependencies,
     resolve_kwargs,
+    resolve_positional,
 )
 from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
@@ -554,6 +555,12 @@ class Velocix:
             result = await handler(request)
         elif call_mode == 0:
             result = await handler()
+        elif call_mode == 4:
+            # Positional dispatch: plan order == signature order, so building
+            # a tuple and splatting avoids the kwargs dict allocation + the
+            # callee's keyword-name mapping (vectorcall fast path).
+            args = resolve_positional(request, path_params, plan)
+            result = await handler(*args)
         elif call_mode == 2:
             kwargs = resolve_kwargs(request, path_params, plan)
             result = await handler(**kwargs)

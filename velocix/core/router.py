@@ -71,7 +71,13 @@ class RouteNode:
 class Router:
     """Ultra-high performance router with advanced caching and optimization"""
 
-    def __init__(self):
+    def __init__(self, *, metrics_enabled: bool = False):
+        # Per-route metrics (hit counts, avg response time) are opt-in: the
+        # counter mutation on every dynamic-route cache hit and the clock
+        # reads on first resolve are pure overhead for apps that never call
+        # get_metrics(). Instrumentation belongs behind an explicit flag, the
+        # same reason Prometheus/OTel middleware is opt-in.
+        self.metrics_enabled = metrics_enabled
         self.root = RouteNode()
         self.route_cache: dict[str, dict[str, CachedRoute]] = defaultdict(dict)
         self._routes_version: int = 0
