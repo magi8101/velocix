@@ -227,62 +227,7 @@ def match_tree(self, path: str) -> tuple[callable, dict]:
 - **FastAPI**: Also uses tree-based routing (via Starlette)
 - **Express.js**: Layer-based matching similar to this
 
-### Layer 3: Bloom Filter (Fast Rejection)
-
-```python
-class BloomFilter:
-    """Probabilistic data structure for set membership"""
-    def __init__(self, capacity=10000, error_rate=0.001):
-        # Calculate optimal bit array size
-        self.size = int(-(capacity * log(error_rate)) / (log(2) ** 2))
-        self.hash_count = int((self.size / capacity) * log(2))
-        self.bit_array = [False] * self.size
-    
-    def add(self, item: str):
-        """Add route to filter"""
-        for i in range(self.hash_count):
-            # Multiple hash functions using different seeds
-            index = hash((item, i)) % self.size
-            self.bit_array[index] = True
-    
-    def __contains__(self, item: str) -> bool:
-        """Check if route might exist"""
-        for i in range(self.hash_count):
-            index = hash((item, i)) % self.size
-            if not self.bit_array[index]:
-                return False  # Definitely not in set
-        return True  # Probably in set (might be false positive)
-```
-
-**Why bloom filters:**
-
-Consider a scenario where someone scans your API for vulnerabilities:
-```
-GET /admin
-GET /py-admin
-GET /pyadmin
-GET /config.py
-... thousands of non-existent routes
-```
-
-Without bloom filter:
-- Check static routes: O(1) miss
-- Traverse route tree: O(log n) miss
-- Total: ~500ns per 404
-
-With bloom filter:
-- Check bloom filter: O(1) → "definitely not here"
-- Skip expensive tree traversal
-- Total: ~10ns per 404
-
-**50x faster 404 responses**. Bloom filter is tiny (~10KB memory) and can handle 10,000 routes with 0.1% false positive rate.
-
-**Inspired by:**
-- **Cassandra & BigTable**: Use bloom filters to avoid disk reads
-- **Chrome**: Uses bloom filters for malicious URL detection
-- **BlackSheep**: Python framework that uses bloom filters for routing
-
-### Layer 4: Route Cache
+### Layer 3: Route Cache (Version-Validated)
 
 ```python
 def match(self, method: str, path: str):
@@ -297,10 +242,6 @@ def match(self, method: str, path: str):
     if handler:
         self.route_cache[cache_key] = (handler, {})
         return handler, {}
-    
-    # Layer 3: Bloom filter check
-    if path not in self.bloom_filter:
-        raise HTTPException(404)  # ~10ns rejection
     
     # Layer 2: Tree traversal
     handler, params = self.match_tree(path)
@@ -1000,8 +941,7 @@ Complete flow from TCP connection to response, showing what happens at each laye
    ↓
    a. Check route cache: "GET:/users/123" → cache miss
    b. Check static routes: not found
-   c. Check bloom filter: path exists (proceed)
-   d. Traverse route tree:
+   c. Traverse route tree:
       - Match 'users' → static segment
       - Match '123' → param segment {user_id}
       - Found handler: get_user(user_id: int)
@@ -1182,14 +1122,7 @@ def get_user(user_id: int):  # Auto-converts and validates
 
 ### From BlackSheep
 
-**1. Bloom Filters for Routing**
-```python
-if path not in self.bloom_filter:
-    raise HTTPException(404)
-```
-**Why adopted**: BlackSheep showed bloom filters give ~100x faster 404 responses. Critical for APIs under attack/scanning. Tiny memory cost (~10KB) for huge win.
-
-**2. Route Caching**
+**1. Route Caching**
 ```python
 self.route_cache[cache_key] = (handler, params)
 ```
