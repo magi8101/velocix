@@ -385,22 +385,26 @@ def generate_operation_from_function(
                 )
             )
 
-    # Generate summary from function name
-    summary = func.__name__.replace("_", " ").title()
+    # Read __route_*__ attrs (set by route decorator) or fall back to auto-gen
+    summary = getattr(func, "__route_summary__", None)
+    if summary is None:
+        summary = func.__name__.replace("_", " ").title()
 
-    # Use docstring as description
-    description = inspect.getdoc(func)
+    description = getattr(func, "__route_description__", None)
+    if description is None:
+        description = inspect.getdoc(func)
 
-    # Auto-generate tags from path
-    tags = []
-    if auto_tags and path != "/":
-        # Extract first path segment as tag
-        parts = path.strip("/").split("/")
-        if parts and parts[0]:
-            # Remove path parameter brackets
-            tag = parts[0].replace("{", "").replace("}", "")
-            if tag:
-                tags.append(tag)
+    tags = getattr(func, "__route_tags__", None)
+    if tags is None:
+        tags = []
+        if auto_tags and path != "/":
+            parts = path.strip("/").split("/")
+            if parts and parts[0]:
+                tag = parts[0].replace("{", "").replace("}", "")
+                if tag:
+                    tags.append(tag)
+
+    deprecated = getattr(func, "__route_deprecated__", False)
 
     # Generate default responses
     responses = {"200": Response(description="Successful operation")}
@@ -421,12 +425,15 @@ def generate_operation_from_function(
     responses["404"] = Response(description="Not Found")
     responses["500"] = Response(description="Internal Server Error")
 
+    operation_id = getattr(func, "__route_operation_id__", None) or func.__name__
+
     # Create operation with parameters
     operation = Operation(
         summary=summary,
         description=description,
-        operation_id=f"{func.__name__}",
+        operation_id=operation_id,
         tags=tags,
+        deprecated=deprecated,
         parameters=parameters,  # This contains path and query params only
         responses=responses,
     )
