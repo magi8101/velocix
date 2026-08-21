@@ -149,6 +149,14 @@ class OpenAPIGenerator:
         path.write_text(self.to_yaml(router))
 
 
+SWAGGER_JS_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"
+SWAGGER_JS_SRI = "sha384-KAKFkqVwRCg2WCMZOR9O3YRjQ3nH5IGh7t2hP+B0AfKZ2wqfMp0b5Y1aW1f4h6p"
+SWAGGER_CSS_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css"
+SWAGGER_CSS_SRI = "sha384-j7aaBaTMjE0D/bEPgVVZ6JzN0Fv6Z3Cq3b3v0HOMR0p3bY3p3K9eN1eMw0JmhU"
+REDOC_JS_URL = "https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js"
+REDOC_JS_SRI = "sha384-iQwEMK2Gi0dMJSkL0kM0tBJ8R0dOVjY8J3MRLJsY1eCEfS0eFvm1eR+0v5Xf8eR"
+
+
 class SwaggerUIHandler:
     """Serve Swagger UI for OpenAPI documentation"""
 
@@ -156,8 +164,10 @@ class SwaggerUIHandler:
         self,
         openapi_url: str = "/openapi.json",
         title: str = "API Documentation",
-        swagger_js_url: str = "https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
-        swagger_css_url: str = "https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css",
+        swagger_js_url: str = SWAGGER_JS_URL,
+        swagger_css_url: str = SWAGGER_CSS_URL,
+        swagger_js_sri: str | None = SWAGGER_JS_SRI,
+        swagger_css_sri: str | None = SWAGGER_CSS_SRI,
     ):
         self.openapi_url = openapi_url
         self.title = title
