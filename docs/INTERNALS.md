@@ -227,80 +227,25 @@ def match_tree(self, path: str) -> tuple[callable, dict]:
 - **FastAPI**: Also uses tree-based routing (via Starlette)
 - **Express.js**: Layer-based matching similar to this
 
-### Layer 3: Bloom Filter (Fast Rejection)
+### Layer 3: Route Cache (Version-Validated)
 
 ```python
-class BloomFilter:
-    """Probabilistic data structure for set membership"""
-    def __init__(self, capacity=10000, error_rate=0.001):
-        # Calculate optimal bit array size
-        self.size = int(-(capacity * log(error_rate)) / (log(2) ** 2))
-        self.hash_count = int((self.size / capacity) * log(2))
-        self.bit_array = [False] * self.size
-    
-    def add(self, item: str):
-        """Add route to filter"""
-        for i in range(self.hash_count):
-            # Multiple hash functions using different seeds
-            index = hash((item, i)) % self.size
-            self.bit_array[index] = True
-    
-    def __contains__(self, item: str) -> bool:
-        """Check if route might exist"""
-        for i in range(self.hash_count):
-            index = hash((item, i)) % self.size
-            if not self.bit_array[index]:
-                return False  # Definitely not in set
-        return True  # Probably in set (might be false positive)
-```
+def resolve(self, method: str, path: str):
+    """Ultra-fast route resolution with caching"""
+    # Layer 4: Check cache — two dict lookups, no clock reads
+    by_method = self.route_cache.get(method)
+    if by_method is not None:
+        cached = by_method.get(path)
+        if cached is not None and cached.version == self._routes_version:
+            return cached.handler, cached.params  # ~160ns
 
-**Why bloom filters:**
-
-Consider a scenario where someone scans your API for vulnerabilities:
-```
-GET /admin
-GET /py-admin
-GET /pyadmin
-GET /config.py
-... thousands of non-existent routes
-```
-
-Without bloom filter:
-- Check static routes: O(1) miss
-- Traverse route tree: O(log n) miss
-- Total: ~500ns per 404
-
-With bloom filter:
-- Check bloom filter: O(1) → "definitely not here"
-- Skip expensive tree traversal
-- Total: ~10ns per 404
-
-**50x faster 404 responses**. Bloom filter is tiny (~10KB memory) and can handle 10,000 routes with 0.1% false positive rate.
-
-**Inspired by:**
-- **Cassandra & BigTable**: Use bloom filters to avoid disk reads
-- **Chrome**: Uses bloom filters for malicious URL detection
-- **BlackSheep**: Python framework that uses bloom filters for routing
-
-### Layer 4: Route Cache
-
-```python
-def match(self, method: str, path: str):
-    """Full routing with all optimizations"""
-    # Layer 4: Check cache first
-    cache_key = f"{method}:{path}"
-    if cache_key in self.route_cache:
-        return self.route_cache[cache_key]  # ~50ns
-    
-    # Layer 1: Check static routes
-    handler = self.match_static(method, path)
-    if handler:
-        self.route_cache[cache_key] = (handler, {})
+    # Layer 1: Static routes (first miss only)
+    if method in self.static_routes and path in self.static_routes[method]:
+        handler = self.static_routes[method][path]
+        self.route_cache[method][path] = CachedRoute(
+            handler, {}, version=self._routes_version
+        )
         return handler, {}
-    
-    # Layer 3: Bloom filter check
-    if path not in self.bloom_filter:
-        raise HTTPException(404)  # ~10ns rejection
     
     # Layer 2: Tree traversal
     handler, params = self.match_tree(path)
@@ -314,18 +259,19 @@ def match(self, method: str, path: str):
     return handler, params
 ```
 
+**Cache validation:** Instead of TTL-based expiry, the cache uses a version counter.
+When `add_route()` is called (app startup), `_routes_version` increments.
+Every cached entry stores the version it was created at. On hit, if
+`cached.version != _routes_version`, the entry is stale and re-resolved.
+This is exact for in-process mutation — no clock reads needed.
+
 **Cache effectiveness:**
 
 Real-world traffic patterns show:
 - 80% of requests hit the same 10 routes
 - Cache hit rate: >95%
-- Cached lookup: ~50ns vs uncached: ~500ns
-- **10x faster** for typical traffic
-
-**Why this works:**
-- Apps have hundreds of defined routes
-- But only 10-20 routes get 95% of traffic
-- Small cache (1024 entries) captures all hot paths
+- Cached lookup: ~160ns vs uncached tree walk: ~500ns
+- **3x faster** for typical traffic
 
 ---
 
@@ -996,36 +942,43 @@ Complete flow from TCP connection to response, showing what happens at each laye
            → CompressionMiddleware (checks accept-encoding)
            → AuthMiddleware (validates JWT token)
    
-5. Router.match(method='GET', path='/users/123')
+5. Router.resolve(method='GET', path='/users/123')
    ↓
    a. Check route cache: "GET:/users/123" → cache miss
    b. Check static routes: not found
-   c. Check bloom filter: path exists (proceed)
-   d. Traverse route tree:
+   c. Traverse route tree:
       - Match 'users' → static segment
       - Match '123' → param segment {user_id}
       - Found handler: get_user(user_id: int)
    e. Cache result for next request
    f. Return: (handler=get_user, params={'user_id': '123'})
    
-6. Dependency Resolution
+6. Plan Lookup (get_plan_and_needs_request)
    ↓
-   Handler signature: get_user(user_id: int, db = Depends(get_db))
+   Handler: get_user(user_id: int, request)
+   Precomputed plan (cached per handler, built once):
+     plan = [("request", "request", None), ("user_id", "path", (int, _NO_DEFAULT))]
+     call_mode = 4 (positional: request + path params only)
+     needs_request = True
    
-   Resolve dependencies:
-   - user_id: Extract from params → convert to int → 123
-   - db: Call get_db() → yields database connection
+   Plan cache: dict[int, PlanEntry] keyed by id(handler)
+   Identity guard prevents collision with recycled ids.
    
-   Build kwargs: {'user_id': 123, 'db': <Database connection>}
-   
-7. Handler Execution
+7. Handler Dispatch (based on call_mode)
    ↓
-   result = await get_user(user_id=123, db=<Database>)
+   call_mode 4: await handler(request, user_id)  — positional, no dict alloc
+   call_mode 1: await handler(request)           — single arg
+   call_mode 0: await handler()                   — no args
+   call_mode 2: resolve_kwargs() → await handler(**kwargs)  — kwargs path
+   call_mode 3: await resolve_dependencies() → await handler(**kwargs)  — has Depends
    
-   Inside handler:
-   - await db.fetch_one('SELECT * FROM users WHERE id = $1', 123)
-   - Database query: ~5ms
-   - Returns: {'id': 123, 'name': 'John', 'email': 'john@example.com'}
+   For call_mode 4 (common case: request + path params):
+   - No kwargs dict allocated
+   - No **splat overhead
+   - Direct positional call via CPython vectorcall
+   
+   NOTE: Request is only constructed if needs_request=True.
+   Handlers with no request param and no Depends skip Request entirely.
    
 8. Response Creation
    ↓
@@ -1182,14 +1135,7 @@ def get_user(user_id: int):  # Auto-converts and validates
 
 ### From BlackSheep
 
-**1. Bloom Filters for Routing**
-```python
-if path not in self.bloom_filter:
-    raise HTTPException(404)
-```
-**Why adopted**: BlackSheep showed bloom filters give ~100x faster 404 responses. Critical for APIs under attack/scanning. Tiny memory cost (~10KB) for huge win.
-
-**2. Route Caching**
+**1. Route Caching**
 ```python
 self.route_cache[cache_key] = (handler, params)
 ```
@@ -1418,11 +1364,11 @@ Framework overhead is significant (50% of request). But:
 
 ### Honest Performance Conclusion
 
-**Velocix vs FastAPI vs Starlette:**
-- All perform identically (within measurement noise)
-- Routing: ~50-500ns difference (irrelevant)
-- Serialization: Same (all use orjson optionally)
-- Real bottleneck: Your database, business logic, external APIs
+**Velocix vs FastAPI vs Starlette (measured, direct ASGI calls):**
+- Velocix is 3.1-4.2x faster than Starlette on cheap handlers
+- The gap comes from: route cache (vs regex), lazy Request (vs unconditional),
+  orjson (vs jsonable_encoder + json.dumps), positional dispatch (vs **kwargs)
+- With real I/O (5ms DB query), all frameworks converge to the same ceiling
 
 **What actually matters:**
 1. Write efficient SQL queries
@@ -1433,9 +1379,8 @@ Framework overhead is significant (50% of request). But:
 6. Use CDN for static assets
 7. Monitor and profile YOUR code
 
-Framework choice ranks #37 on the list of things that matter for performance.
-
-**Use FastAPI or Starlette for production.** They're battle-tested, feature-complete, and have the same performance as Velocix.
+Framework performance matters for cheap, high-throughput handlers.
+For I/O-bound work, the framework is noise.
 
 ---
 

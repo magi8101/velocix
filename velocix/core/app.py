@@ -15,6 +15,7 @@ from velocix.core.depends import (
     get_plan_and_needs_request,
     resolve_dependencies,
     resolve_kwargs,
+    resolve_positional,
 )
 from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
@@ -85,12 +86,16 @@ def _request_if_none_match(
     if request is not None:
         return request.headers.get(b"if-none-match")
     if scope is not None:
-        return dict(scope.get("headers", [])).get(b"if-none-match")
+        for k, v in scope.get("headers", []):
+            if k == b"if-none-match":
+                return v
     return None
 
 
 class Velocix:
     """Main ASGI application with cached middleware compilation"""
+
+    _CACHE_MAX_SIZE: int = 1024
 
     __slots__ = (
         "router",
@@ -494,6 +499,7 @@ class Velocix:
                 call_mode,
                 status_code,
                 response_model,
+                response_class,
             ) = get_plan_and_needs_request(handler)
             if needs_request:
                 request = self._init_request(scope, receive, handler, path_params)
@@ -507,6 +513,7 @@ class Velocix:
                     call_mode,
                     status_code,
                     response_model,
+                    response_class,
                 )
             return await self._execute_handler(
                 None,
@@ -518,6 +525,7 @@ class Velocix:
                 call_mode,
                 status_code,
                 response_model,
+                response_class,
             )
 
         except Exception as exc:
@@ -551,6 +559,7 @@ class Velocix:
         call_mode: int = 2,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        response_class: type[Response] | None = None,
     ) -> ResponseType:
         """Execute route handler with dependency injection"""
         if handler is None:
@@ -567,7 +576,7 @@ class Velocix:
             entry = getattr(request, "_plan", None) if request is not None else None
             if entry is None:
                 entry = get_plan_and_needs_request(handler)
-            plan, _, cache_ttl, call_mode, status_code, response_model = entry
+            plan, _, cache_ttl, call_mode, status_code, response_model, response_class = entry
 
         # Response cache hit: reuse the serialized body, skip handler + orjson.
         # method/path/query are only needed to build the cache key, so defer
@@ -618,6 +627,12 @@ class Velocix:
             result = await handler(request)
         elif call_mode == 0:
             result = await handler()
+        elif call_mode == 4:
+            # Positional dispatch: plan order == signature order, so building
+            # a tuple and splatting avoids the kwargs dict allocation + the
+            # callee's keyword-name mapping (vectorcall fast path).
+            args = resolve_positional(request, path_params, plan)
+            result = await handler(*args)
         elif call_mode == 2:
             kwargs = resolve_kwargs(request, path_params, plan)
             result = await handler(**kwargs)
@@ -630,30 +645,40 @@ class Velocix:
         # status_code/response_model are route-decorator defaults; an explicit
         # Response return always wins (its own status/body are authoritative).
         response: ResponseType
+        resp_class = response_class or JSONResponse
         if isinstance(result, dict):
             if response_model is not None:
                 converted = msgspec.convert(result, type=response_model)
-                response = JSONResponse.from_body(
-                    msgspec.json.encode(converted), status_code=status_code or 200
-                )
+                if resp_class is JSONResponse:
+                    response = JSONResponse.from_body(
+                        msgspec.json.encode(converted), status_code=status_code or 200
+                    )
+                else:
+                    response = resp_class(converted, status_code=status_code or 200)
             else:
-                response = JSONResponse(result, status_code=status_code or 200)
+                response = resp_class(result, status_code=status_code or 200)
         elif isinstance(result, Response):
             response = result
         elif isinstance(result, StreamingResponse):
             response = result
         elif isinstance(result, str):
-            response = Response(result, media_type="text/plain", status_code=status_code or 200)
+            if response_class is not None:
+                response = response_class(result, status_code=status_code or 200)
+            else:
+                response = Response(result, media_type="text/plain", status_code=status_code or 200)
         elif result is None:
             response = Response(b"", status_code=status_code or 204)
         else:
             if response_model is not None:
                 converted = msgspec.convert(result, type=response_model)
-                response = JSONResponse.from_body(
-                    msgspec.json.encode(converted), status_code=status_code or 200
-                )
+                if resp_class is JSONResponse:
+                    response = JSONResponse.from_body(
+                        msgspec.json.encode(converted), status_code=status_code or 200
+                    )
+                else:
+                    response = resp_class(converted, status_code=status_code or 200)
             else:
-                response = JSONResponse(result, status_code=status_code or 200)
+                response = resp_class(result, status_code=status_code or 200)
 
         # Cache the serialized body only for dict/JSON responses. Compute the
         # ETag once at store time (xxh64 of the exact bytes) so hits never
@@ -662,6 +687,7 @@ class Velocix:
         if cache_ttl is not None and isinstance(response, JSONResponse):
             body = bytes(response.body)
             etag = _make_etag(body)
+            self._prune_response_cache()
             self._response_cache[cache_key] = (
                 time.time() + cache_ttl,
                 body,
@@ -674,6 +700,25 @@ class Velocix:
             )
 
         return response
+
+    def _prune_response_cache(self) -> None:
+        """Evict expired entries first, then oldest entries if still over size.
+
+        Pattern from Pallets/cachelib SimpleCache._prune: sweep expired,
+        then sort remaining by expiry and drop oldest until under threshold.
+        """
+        cache = self._response_cache
+        if len(cache) <= self._CACHE_MAX_SIZE:
+            return
+        now = time.time()
+        expired = [k for k, v in cache.items() if v[0] < now]
+        for k in expired:
+            del cache[k]
+        if len(cache) <= self._CACHE_MAX_SIZE:
+            return
+        oldest = sorted(cache, key=lambda k: cache[k][0])
+        for k in oldest[: len(cache) - self._CACHE_MAX_SIZE]:
+            del cache[k]
 
     async def _handle_exception(self, request: Request, exc: Exception) -> ResponseType:
         """Handle exceptions with registered handlers"""
