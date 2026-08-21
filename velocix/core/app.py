@@ -118,6 +118,7 @@ class Velocix:
         "openapi_url",
         "docs_auth",
         "openapi_schema",
+        "tags",
     )
 
     def __init__(
@@ -131,6 +132,7 @@ class Velocix:
         redoc_url: str | None = "/redoc",
         openapi_url: str | None = "/openapi.json",
         docs_auth: Callable[..., Any] | None = None,
+        tags: list[dict[str, str]] | None = None,
     ) -> None:
         self.router = Router()
         self.state = State()
@@ -151,6 +153,7 @@ class Velocix:
         self.redoc_url = redoc_url
         self.openapi_url = openapi_url
         self.docs_auth = docs_auth
+        self.tags = tags or []
         self.openapi_schema: dict[str, Any] | None = None
 
         self._setup_default_exception_handlers()
@@ -327,14 +330,15 @@ class Velocix:
         """Add middleware to stack"""
         self._middleware_stack.append(middleware_class)
 
-    def include_router(self, router: Router, prefix: str = "") -> None:
+    def include_router(self, router: Router, prefix: str = "", tags: list[str] | None = None) -> None:
         """Merge another router's routes into this app, optionally under a prefix.
 
         Args:
             router: Router whose routes should be registered on this app
             prefix: Path prefix prepended to every route (e.g. "/api")
+            tags: Tags applied to every route in the router
         """
-        self.router.include_router(router, prefix=prefix)
+        self.router.include_router(router, prefix=prefix, tags=tags)
 
     def mount(self, path: str, app: Any) -> None:
         """Mount an ASGI application under a path prefix.
@@ -675,12 +679,7 @@ class Velocix:
         response: ResponseType
         resp_class = response_class or JSONResponse
         if isinstance(result, dict):
-            if response_model is not None and response_filter is not None:
-                filtered = response_filter(result)
-                response = JSONResponse.from_body(
-                    orjson.dumps(filtered), status_code=status_code or 200
-                )
-            elif response_model is not None:
+            if response_model is not None:
                 try:
                     converted = msgspec.convert(result, type=response_model)
                 except msgspec.ValidationError as exc:
@@ -709,7 +708,13 @@ class Velocix:
             response = Response(b"", status_code=status_code or 204)
         else:
             if response_model is not None:
-                converted = msgspec.convert(result, type=response_model)
+                try:
+                    converted = msgspec.convert(result, type=response_model)
+                except msgspec.ValidationError as exc:
+                    raise ValidationError(
+                        detail="Response validation failed",
+                        errors=[{"type": "response_error", "msg": str(exc)}],
+                    ) from exc
                 if resp_class is JSONResponse:
                     response = JSONResponse.from_body(
                         msgspec.json.encode(converted), status_code=status_code or 200
@@ -895,11 +900,16 @@ class Velocix:
                                     paths[path] = PathItem()
                                 setattr(paths[path], method.lower(), op)
 
+                    from velocix.openapi.models import Tag
+
+                    tag_objects = [Tag(name=t["name"], description=t.get("description")) for t in self.tags] if self.tags else None
+
                     self.openapi_schema = OpenAPISpec(
                         openapi="3.1.0",
                         info=Info(title=self.title, version=self.version, description=self.description),
                         servers=[Server(url="/", description="Default server")],
                         paths=paths,
+                        tags=tag_objects,
                     ).to_dict()
                 return JSONResponse(self.openapi_schema)
 
