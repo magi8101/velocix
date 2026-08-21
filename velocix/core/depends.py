@@ -298,7 +298,6 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
         status_code = getattr(handler, "__route_status_code__", None)
         response_model = getattr(handler, "__response_model__", None)
         response_class = getattr(handler, "__route_response_class__", None)
-        response_filter = getattr(handler, "__response_filter__", None)
         # Fast call modes:
         #   0: no args                    -> handler()
         #   1: single positional request  -> handler(request)
@@ -323,7 +322,7 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
             call_mode = 2
         entry = (
             handler,
-            (plan_tuple, needs_request, cache_ttl, call_mode, status_code, response_model, response_class, response_filter),
+            (plan_tuple, needs_request, cache_ttl, call_mode, status_code, response_model, response_class),
         )
         _plan_cache[func_id] = entry
     return entry[1][0]
