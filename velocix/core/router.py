@@ -254,16 +254,23 @@ class Router:
 
         return decorator
 
-    def include_router(self, router: "Router", prefix: str = "") -> None:
+    def include_router(self, router: "Router", prefix: str = "", tags: list[str] | None = None) -> None:
         """Merge another router's routes into this one, optionally under a prefix.
 
         Args:
             router: Router whose routes should be re-registered here
             prefix: Path prefix prepended to every route (e.g. "/api")
+            tags: Tags applied to every route in the router
         """
         prefix = prefix.rstrip("/") if prefix else ""
         for method, path, handler, name in router._registered:
             self.add_route(method, prefix + path, handler, name=name)
+            if tags:
+                existing = getattr(handler, "__route_tags__", None)
+                if existing:
+                    handler.__route_tags__ = list(existing) + tags
+                else:
+                    handler.__route_tags__ = tags
 
     def url_path_for(self, name: str, /, **path_params: Any) -> str:
         """Build a URL path for a named route (reverse routing).
