@@ -9,7 +9,6 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 import msgspec
-import orjson
 import xxhash
 
 from velocix.core.depends import (
@@ -164,11 +163,6 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
-        response_model_include: set[str] | None = None,
-        response_model_exclude: set[str] | None = None,
-        response_model_exclude_unset: bool = False,
-        response_model_exclude_defaults: bool = False,
-        response_model_exclude_none: bool = False,
         tags: list[str] | None = None,
         summary: str | None = None,
         description: str | None = None,
@@ -185,11 +179,6 @@ class Velocix:
             methods: HTTP methods to register
             status_code: Default status for non-Response handler returns
             response_model: msgspec Struct used to validate/filter dict returns
-            response_model_include: Only include these fields in response
-            response_model_exclude: Exclude these fields from response
-            response_model_exclude_unset: Exclude fields not in the input dict
-            response_model_exclude_defaults: Exclude fields matching their default
-            response_model_exclude_none: Exclude fields with None values
             tags: OpenAPI tags for grouping in docs
             summary: Short summary shown in OpenAPI docs
             description: Verbose description shown in OpenAPI docs
@@ -207,15 +196,6 @@ class Velocix:
                 handler.__route_status_code__ = status_code  # type: ignore[attr-defined]
             if response_model is not None:
                 handler.__response_model__ = response_model  # type: ignore[attr-defined]
-                if response_model_include or response_model_exclude:
-                    self._validate_response_model_fields(
-                        response_model, response_model_include, response_model_exclude
-                    )
-                handler.__response_filter__ = self._build_response_filter(
-                    response_model, response_model_include, response_model_exclude,
-                    response_model_exclude_unset, response_model_exclude_defaults,
-                    response_model_exclude_none,
-                )  # type: ignore[attr-defined]
             if tags is not None:
                 handler.__route_tags__ = tags  # type: ignore[attr-defined]
             if summary is not None:
@@ -232,25 +212,110 @@ class Velocix:
 
         return decorator
 
-    def get(self, path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def get(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for GET routes"""
-        return self.route(path, {"GET"}, **kwargs)
+        return self.route(
+            path, {"GET"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
+        )
 
-    def post(self, path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def post(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for POST routes"""
-        return self.route(path, {"POST"}, **kwargs)
+        return self.route(
+            path, {"POST"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
+        )
 
-    def put(self, path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def put(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PUT routes"""
-        return self.route(path, {"PUT"}, **kwargs)
+        return self.route(
+            path, {"PUT"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
+        )
 
-    def delete(self, path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def delete(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for DELETE routes"""
-        return self.route(path, {"DELETE"}, **kwargs)
+        return self.route(
+            path, {"DELETE"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
+        )
 
-    def patch(self, path: str, **kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def patch(
+        self,
+        path: str,
+        *,
+        status_code: int | None = None,
+        response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
+        name: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PATCH routes"""
-        return self.route(path, {"PATCH"}, **kwargs)
+        return self.route(
+            path, {"PATCH"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
+        )
 
     def websocket(
         self, path: str, *, name: str | None = None
@@ -463,7 +528,6 @@ class Velocix:
                 status_code,
                 response_model,
                 response_class,
-                response_filter,
             ) = get_plan_and_needs_request(handler)
             if needs_request:
                 request = self._init_request(scope, receive, handler, path_params)
@@ -478,7 +542,6 @@ class Velocix:
                     status_code,
                     response_model,
                     response_class,
-                    response_filter,
                 )
             return await self._execute_handler(
                 None,
@@ -491,7 +554,6 @@ class Velocix:
                 status_code,
                 response_model,
                 response_class,
-                response_filter,
             )
 
         except Exception as exc:
@@ -526,7 +588,6 @@ class Velocix:
         status_code: int | None = None,
         response_model: type[Any] | None = None,
         response_class: type[Response] | None = None,
-        response_filter: Callable[..., Any] | None = None,
     ) -> ResponseType:
         """Execute route handler with dependency injection"""
         if handler is None:
@@ -543,7 +604,7 @@ class Velocix:
             entry = getattr(request, "_plan", None) if request is not None else None
             if entry is None:
                 entry = get_plan_and_needs_request(handler)
-            plan, _, cache_ttl, call_mode, status_code, response_model, response_class, response_filter = entry
+            plan, _, cache_ttl, call_mode, status_code, response_model, response_class = entry
 
         # Response cache hit: reuse the serialized body, skip handler + orjson.
         # method/path/query are only needed to build the cache key, so defer
@@ -614,12 +675,7 @@ class Velocix:
         response: ResponseType
         resp_class = response_class or JSONResponse
         if isinstance(result, dict):
-            if response_model is not None and response_filter is not None:
-                filtered = response_filter(result)
-                response = JSONResponse.from_body(
-                    orjson.dumps(filtered), status_code=status_code or 200
-                )
-            elif response_model is not None:
+            if response_model is not None:
                 converted = msgspec.convert(result, type=response_model)
                 if resp_class is JSONResponse:
                     response = JSONResponse.from_body(
@@ -641,12 +697,15 @@ class Velocix:
         elif result is None:
             response = Response(b"", status_code=status_code or 204)
         else:
-            if response_model is not None and response_filter is not None:
-                filtered = response_filter(msgspec.structs.asdict(result))
-                response = JSONResponse.from_body(
-                    orjson.dumps(filtered), status_code=status_code or 200
-                )
-            elif response_model is not None:
+            if response_model is not None:
+                converted = msgspec.convert(result, type=response_model)
+                if resp_class is JSONResponse:
+                    response = JSONResponse.from_body(
+                        msgspec.json.encode(converted), status_code=status_code or 200
+                    )
+                else:
+                    response = resp_class(converted, status_code=status_code or 200)
+            else:
                 response = resp_class(result, status_code=status_code or 200)
 
         # Cache the serialized body only for dict/JSON responses. Compute the
@@ -777,64 +836,6 @@ class Velocix:
     def _setup_default_exception_handlers(self) -> None:
         """Setup default exception handlers"""
         pass
-
-    def _validate_response_model_fields(
-        self,
-        response_model: type[Any],
-        include: set[str] | None,
-        exclude: set[str] | None,
-    ) -> None:
-        import msgspec.inspect as _mi
-
-        info = _mi.type_info(response_model)
-        valid = {f.name for f in info.fields}
-        unknown = (include or set()) | (exclude or set())
-        bad = unknown - valid
-        if bad:
-            raise ValueError(
-                f"response_model_include/exclude references unknown field(s): {bad}"
-            )
-
-    @staticmethod
-    def _build_response_filter(
-        response_model: type[Any],
-        include: set[str] | None,
-        exclude: set[str] | None,
-        exclude_unset: bool,
-        exclude_defaults: bool,
-        exclude_none: bool,
-    ) -> Callable[[dict], dict] | None:
-        if not any([include, exclude, exclude_unset, exclude_defaults, exclude_none]):
-            return None
-        import msgspec.inspect as _mi
-
-        info = _mi.type_info(response_model)
-        encode_name = {f.name: f.encode_name for f in info.fields}
-        defaults: dict[str, Any] = {}
-        if exclude_defaults:
-            for f in info.fields:
-                if f.default is not _mi.NODEFAULT:
-                    defaults[f.name] = f.default
-                elif f.default_factory is not _mi.NODEFAULT:
-                    defaults[f.name] = f.default_factory()
-
-        def _filter(d: dict) -> dict:
-            out: dict[str, Any] = {}
-            for k, v in d.items():
-                if include and k not in include:
-                    continue
-                if exclude and k in exclude:
-                    continue
-                if exclude_none and v is None:
-                    continue
-                if exclude_defaults and k in defaults and v == defaults[k]:
-                    continue
-                if exclude_unset and k not in d:
-                    continue
-                out[encode_name.get(k, k)] = v
-            return out
-
-        return _filter
 
     def _setup_docs_routes(self) -> None:
         """Register /openapi.json, /docs, /redoc routes. Skipped when URLs are None."""
