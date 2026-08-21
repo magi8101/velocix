@@ -105,6 +105,46 @@ class Cookie:
         return f"Cookie(default={self.default!r})"
 
 
+class Body:
+    """Body parameter marker.
+
+    Forces a scalar parameter to be read from the request body instead of
+    being interpreted as a query parameter.  When multiple parameters are
+    declared as body params (either via ``Body()`` or by having multiple
+    ``Struct``-typed params), the framework auto-embeds them:
+
+        PUT /items/1
+        {"item": {"name": "Foo"}, "importance": 5}
+
+    ``embed=True`` forces a single body param to be wrapped in a key even
+    when it is the only body parameter.
+
+    Args:
+        default: Default value, or Ellipsis (`...`) to require the parameter
+        embed: Force embedding in a top-level key (default ``None`` = auto)
+        description: OpenAPI description
+        alias: Override the body key (defaults to the param name)
+    """
+
+    __slots__ = ("default", "embed", "description", "alias")
+
+    def __init__(
+        self,
+        default: Any = _REQUIRED,
+        *,
+        embed: bool | None = None,
+        description: str = "",
+        alias: str | None = None,
+    ) -> None:
+        self.default = default
+        self.embed = embed
+        self.description = description
+        self.alias = alias
+
+    def __repr__(self) -> str:
+        return f"Body(default={self.default!r}, embed={self.embed})"
+
+
 class Form:
     """Form-field parameter marker (multipart or urlencoded bodies).
 
