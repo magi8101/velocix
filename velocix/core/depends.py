@@ -220,7 +220,11 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
                 else:
                     default = marker.default
                 required = default is _NO_DEFAULT or default is Ellipsis
-                plan.append((param_name, kind, (marker, hint, default, required)))
+                if isinstance(marker, Body):
+                    # Normalize Body marker: pre-resolve key at build time
+                    plan.append((param_name, kind, (marker.alias or param_name, hint, default, required)))
+                else:
+                    plan.append((param_name, kind, (marker, hint, default, required)))
             # Plain parameter: a Struct/dict/list annotation is parsed from
             # the request body; otherwise it is a path value if the name is
             # in the route path, or a query parameter (default or required).
@@ -233,7 +237,9 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
                     if param.default is not inspect.Parameter.empty
                     else None
                 )
-                plan.append((param_name, "body", (hint, required, default)))
+                # Normalize: (key, hint, default, required) — key resolved at
+                # build time so the per-request path is pure unpacking.
+                plan.append((param_name, "body", (param_name, hint, default, required)))
             else:
                 default = (
                     param.default
@@ -244,28 +250,41 @@ def _build_resolution_plan(handler: Callable[..., Any]) -> tuple[tuple[str, str,
 
         # --- multi-body detection ---
         # Count body params to decide whether to embed/wrap.
-        # A param is a "body param" if it was auto-detected as a Struct type
-        # (kind == "body", extra = (hint, required, default)) or explicitly
-        # marked with Body() (also kind == "body", extra = (marker, hint, ...)).
         body_indices = [i for i, (_, kind, _) in enumerate(plan) if kind == "body"]
         body_count = len(body_indices)
         if body_count > 1:
-            # Multiple body params → auto-embed: each extracted by name
             plan = list(plan)
             for idx in body_indices:
                 old_name, _old_kind, old_extra = plan[idx]
+                # old_extra is already (key, hint, default, required)
                 plan[idx] = (old_name, "body_multi", old_extra)
             plan = [tuple(p) for p in plan]
         elif body_count == 1:
             idx = body_indices[0]
             old_name, _old_kind, old_extra = plan[idx]
-            # Check if Body(embed=True) was explicitly set
-            embed = None
-            if len(old_extra) == 4:
-                marker = old_extra[0]
-                if isinstance(marker, Body):
-                    embed = marker.embed
-            if embed is True:
+            # Check if Body(embed=True) was explicitly set.
+            # After normalization, first elem is always key (str), so we
+            # need the original marker.  The Body() marker path stores
+            # (marker, hint, default, required) before normalization —
+            # but we already normalized.  Instead, check the handler's
+            # type hints to find the Body marker.
+            hints = _get_type_hints_cached(handler)
+            param_hint = hints.get(old_name)
+            body_marker = None
+            if isinstance(param_hint, type) and isinstance(getattr(param_hint, '__metadata__', None), tuple):
+                pass
+            elif hasattr(param_hint, '__metadata__'):
+                for m in param_hint.__metadata__:
+                    if isinstance(m, Body):
+                        body_marker = m
+                        break
+            # Also check the signature default
+            if body_marker is None:
+                sig = _get_signature(handler)
+                param_obj = sig.parameters.get(old_name)
+                if param_obj is not None and isinstance(param_obj.default, Body):
+                    body_marker = param_obj.default
+            if body_marker is not None and body_marker.embed is True:
                 plan = list(plan)
                 plan[idx] = (old_name, "body_embed", old_extra)
                 plan = [tuple(p) for p in plan]
@@ -537,7 +556,7 @@ async def resolve_dependencies(
         # Body parameter: parse the request body as the annotated type.
         # Single unmarked Struct → flat decode (fastest: one Rust call).
         if kind == "body":
-            hint, required, default = extra
+            _key, hint, default, required = extra
             body = await request.body()
             if not body:
                 if required:
@@ -551,12 +570,12 @@ async def resolve_dependencies(
                         "Request body validation failed",
                         errors=[{"type": "validation_error", "msg": str(exc)}],
                     ) from exc
-            continue
-
-        # Multi-body / embed: parse body once with orjson, extract by name,
+            continue        # Multi-body / embed: parse body once with orjson, extract by name,
         # convert each field with msgspec.convert (no re-encode step).
         # The parsed dict is cached in a local so multiple body_multi/
         # body_embed entries share one parse.
+        # Extra is always (key, hint, default, required) — pre-resolved at
+        # build time, no branching needed here.
         if kind in ("body_multi", "body_embed"):
             if _parsed_body is _NO_DEFAULT:
                 raw_body = await request.body()
@@ -564,16 +583,9 @@ async def resolve_dependencies(
                     _parsed_body = {}
                 else:
                     _parsed_body = orjson.loads(raw_body)
-            if isinstance(extra, tuple) and len(extra) == 4:
-                # Body() marker: extra = (marker, hint, default, required)
-                marker, hint, default, required = extra
-                key = marker.alias or param_name
-            else:
-                # Auto-detected Struct: extra = (hint, required, default)
-                hint, required, default = extra
-                key = param_name
-            raw_value = _parsed_body.get(key)
-            if raw_value is None:
+            key, hint, default, required = extra
+
+            if key not in _parsed_body:
                 if required:
                     raise ValidationError(
                         f"Missing required body field '{key}'"
@@ -581,7 +593,7 @@ async def resolve_dependencies(
                 kwargs[param_name] = default
             else:
                 try:
-                    kwargs[param_name] = msgspec.convert(raw_value, hint)
+                    kwargs[param_name] = msgspec.convert(_parsed_body[key], hint)
                 except msgspec.ValidationError as exc:
                     raise ValidationError(
                         "Request body validation failed",
