@@ -18,7 +18,7 @@ from velocix.core.depends import (
     resolve_kwargs,
     resolve_positional,
 )
-from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound
+from velocix.core.exceptions import ErrorHandler, HTTPException, NotFound, ValidationError
 from velocix.core.middleware import BaseMiddleware, build_middleware_stack
 from velocix.core.request import Request
 from velocix.core.response import JSONResponse, Response, StreamingResponse
@@ -620,7 +620,13 @@ class Velocix:
                     orjson.dumps(filtered), status_code=status_code or 200
                 )
             elif response_model is not None:
-                converted = msgspec.convert(result, type=response_model)
+                try:
+                    converted = msgspec.convert(result, type=response_model)
+                except msgspec.ValidationError as exc:
+                    raise ValidationError(
+                        detail="Response validation failed",
+                        errors=[{"type": "response_error", "msg": str(exc)}],
+                    ) from exc
                 if resp_class is JSONResponse:
                     response = JSONResponse.from_body(
                         msgspec.json.encode(converted), status_code=status_code or 200

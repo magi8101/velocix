@@ -132,7 +132,7 @@ def test_response_model_filters_extra_fields():
     _run(scenario())
 
 
-def test_response_model_validation_error_is_500():
+def test_response_model_validation_error_is_422():
     app = Velocix()
 
     @app.get("/item", response_model=Item)
@@ -142,7 +142,10 @@ def test_response_model_validation_error_is_500():
     async def scenario():
         async with TestClient(app) as client:
             response = await client.get("/item")
-            assert response.status_code == 500
+            assert response.status_code == 422
+            body = response.json()
+            assert body["error"]["status_code"] == 422
+            assert any("qty" in err.get("msg", "") for err in body["error"]["context"]["errors"])
 
     _run(scenario())
 
