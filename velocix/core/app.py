@@ -110,9 +110,28 @@ class Velocix:
         "_startup_complete",
         "_response_cache",
         "_mounts",
+        "title",
+        "version",
+        "description",
+        "docs_url",
+        "redoc_url",
+        "openapi_url",
+        "docs_auth",
+        "openapi_schema",
     )
 
-    def __init__(self, debug: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        title: str = "Velocix",
+        version: str = "0.1.0",
+        description: str = "",
+        debug: bool = False,
+        docs_url: str | None = "/docs",
+        redoc_url: str | None = "/redoc",
+        openapi_url: str | None = "/openapi.json",
+        docs_auth: Callable[..., Any] | None = None,
+    ) -> None:
         self.router = Router()
         self.state = State()
         self._middleware_stack: list[type[BaseMiddleware] | Callable[..., Any]] = []
@@ -125,8 +144,17 @@ class Velocix:
         self._response_cache: dict[str, tuple[float, bytes, int, bytes | None]] = {}
         self._mounts: dict[str, Any] = {}
         self._error_handler = ErrorHandler(debug=debug)
+        self.title = title
+        self.version = version
+        self.description = description
+        self.docs_url = docs_url
+        self.redoc_url = redoc_url
+        self.openapi_url = openapi_url
+        self.docs_auth = docs_auth
+        self.openapi_schema: dict[str, Any] | None = None
 
         self._setup_default_exception_handlers()
+        self._setup_docs_routes()
 
     def route(
         self,
@@ -808,6 +836,131 @@ class Velocix:
     def _setup_default_exception_handlers(self) -> None:
         """Setup default exception handlers"""
         pass
+
+    def _setup_docs_routes(self) -> None:
+        """Register /openapi.json, /docs, /redoc routes. Skipped when URLs are None."""
+        import html as _html
+
+        from velocix.core.response import HTMLResponse
+
+        title_esc = _html.escape(self.title)
+
+        if self.openapi_url:
+
+            async def openapi_handler(request: Request) -> Response:
+                if self.openapi_schema is None:
+                    from velocix.openapi.auto_docs import (
+                        generate_operation_from_function,
+                    )
+                    from velocix.openapi.models import (
+                        Info,
+                        OpenAPISpec,
+                        PathItem,
+                        Server,
+                    )
+
+                    paths: dict[str, PathItem] = {}
+                    if hasattr(self.router, "static_routes"):
+                        for method, routes in self.router.static_routes.items():
+                            for path, handler in routes.items():
+                                if getattr(handler, "__route_include_in_schema__", True) is False:
+                                    continue
+                                if path in (self.openapi_url, self.docs_url, self.redoc_url):
+                                    continue
+                                op = generate_operation_from_function(handler, path, method.upper())
+                                if path not in paths:
+                                    paths[path] = PathItem()
+                                setattr(paths[path], method.lower(), op)
+                    if hasattr(self.router, "route_cache"):
+                        for method, routes in self.router.route_cache.items():
+                            for path, cached in routes.items():
+                                handler = cached.handler
+                                if getattr(handler, "__route_include_in_schema__", True) is False:
+                                    continue
+                                if path in (self.openapi_url, self.docs_url, self.redoc_url):
+                                    continue
+                                op = generate_operation_from_function(handler, path, method.upper())
+                                if path not in paths:
+                                    paths[path] = PathItem()
+                                setattr(paths[path], method.lower(), op)
+
+                    self.openapi_schema = OpenAPISpec(
+                        openapi="3.1.0",
+                        info=Info(title=self.title, version=self.version, description=self.description),
+                        servers=[Server(url="/", description="Default server")],
+                        paths=paths,
+                    ).to_dict()
+                return JSONResponse(self.openapi_schema)
+
+            self.router.add_route("GET", self.openapi_url, openapi_handler)
+
+        if self.openapi_url and self.docs_url:
+
+            async def swagger_handler(request: Request) -> HTMLResponse:
+                openapi_url = self.openapi_url
+                from velocix.openapi.generator import (
+                    SWAGGER_CSS_SRI,
+                    SWAGGER_CSS_URL,
+                    SWAGGER_JS_SRI,
+                    SWAGGER_JS_URL,
+                )
+
+                js_integrity = f' integrity="{SWAGGER_JS_SRI}" crossorigin="anonymous"' if SWAGGER_JS_SRI else ""
+                css_integrity = f' integrity="{SWAGGER_CSS_SRI}" crossorigin="anonymous"' if SWAGGER_CSS_SRI else ""
+                html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="{SWAGGER_CSS_URL}"{css_integrity} />
+<title>{title_esc} - Swagger UI</title>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="{SWAGGER_JS_URL}"{js_integrity}></script>
+<script>
+const ui = SwaggerUIBundle({{
+    url: '{_html.escape(openapi_url)}',
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    presets: [
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIBundle.SwaggerUIStandalonePreset
+    ],
+    layout: "StandaloneLayout"
+}});
+</script>
+</body>
+</html>"""
+                return HTMLResponse(html_content)
+
+            self.router.add_route("GET", self.docs_url, swagger_handler)
+
+        if self.openapi_url and self.redoc_url:
+
+            async def redoc_handler(request: Request) -> HTMLResponse:
+                from velocix.openapi.generator import REDOC_JS_SRI, REDOC_JS_URL
+
+                js_integrity = f' integrity="{REDOC_JS_SRI}" crossorigin="anonymous"' if REDOC_JS_SRI else ""
+                html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title_esc} - ReDoc</title>
+<link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+<style>body {{ margin:0; padding:0; }}</style>
+</head>
+<body>
+<redoc spec-url="{_html.escape(self.openapi_url)}"></redoc>
+<script src="{REDOC_JS_URL}"{js_integrity}></script>
+</body>
+</html>"""
+                return HTMLResponse(html_content)
+
+            self.router.add_route("GET", self.redoc_url, redoc_handler)
 
     def add_background_task(self, coro: Coroutine[Any, Any, None]) -> None:
         """Schedule background task"""

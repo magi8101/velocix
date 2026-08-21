@@ -407,13 +407,15 @@ def generate_operation_from_function(
     deprecated = getattr(func, "__route_deprecated__", False)
 
     # Generate default responses
-    responses = {"200": Response(description="Successful operation")}
-
-    # Add appropriate responses based on method
-    if method.upper() == "POST":
-        responses["201"] = Response(description="Created")
-    elif method.upper() == "DELETE":
-        responses["204"] = Response(description="No Content")
+    route_status = getattr(func, "__route_status_code__", None)
+    if route_status is not None:
+        responses = {str(route_status): Response(description="Successful operation")}
+    else:
+        responses = {"200": Response(description="Successful operation")}
+        if method.upper() == "POST":
+            responses["201"] = Response(description="Created")
+        elif method.upper() == "DELETE":
+            responses["204"] = Response(description="No Content")
 
     # Add validation error response if there are body params
     if has_body_field or parameters:
