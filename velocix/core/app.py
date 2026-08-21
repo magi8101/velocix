@@ -85,7 +85,9 @@ def _request_if_none_match(
     if request is not None:
         return request.headers.get(b"if-none-match")
     if scope is not None:
-        return dict(scope.get("headers", [])).get(b"if-none-match")
+        for k, v in scope.get("headers", []):
+            if k == b"if-none-match":
+                return v
     return None
 
 
