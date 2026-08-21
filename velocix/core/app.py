@@ -92,6 +92,8 @@ def _request_if_none_match(
 class Velocix:
     """Main ASGI application with cached middleware compilation"""
 
+    _CACHE_MAX_SIZE: int = 1024
+
     __slots__ = (
         "router",
         "state",
@@ -598,6 +600,7 @@ class Velocix:
         if cache_ttl is not None and isinstance(response, JSONResponse):
             body = bytes(response.body)
             etag = _make_etag(body)
+            self._prune_response_cache()
             self._response_cache[cache_key] = (
                 time.time() + cache_ttl,
                 body,
@@ -610,6 +613,25 @@ class Velocix:
             )
 
         return response
+
+    def _prune_response_cache(self) -> None:
+        """Evict expired entries first, then oldest entries if still over size.
+
+        Pattern from Pallets/cachelib SimpleCache._prune: sweep expired,
+        then sort remaining by expiry and drop oldest until under threshold.
+        """
+        cache = self._response_cache
+        if len(cache) <= self._CACHE_MAX_SIZE:
+            return
+        now = time.time()
+        expired = [k for k, v in cache.items() if v[0] < now]
+        for k in expired:
+            del cache[k]
+        if len(cache) <= self._CACHE_MAX_SIZE:
+            return
+        oldest = sorted(cache, key=lambda k: cache[k][0])
+        for k in oldest[: len(cache) - self._CACHE_MAX_SIZE]:
+            del cache[k]
 
     async def _handle_exception(self, request: Request, exc: Exception) -> ResponseType:
         """Handle exceptions with registered handlers"""
