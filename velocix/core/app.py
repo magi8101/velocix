@@ -130,6 +130,12 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
@@ -140,6 +146,12 @@ class Velocix:
             methods: HTTP methods to register
             status_code: Default status for non-Response handler returns
             response_model: msgspec Struct used to validate/filter dict returns
+            tags: OpenAPI tags for grouping in docs
+            summary: Short summary shown in OpenAPI docs
+            description: Verbose description shown in OpenAPI docs
+            deprecated: Mark route as deprecated in OpenAPI docs
+            include_in_schema: Whether to include this route in OpenAPI schema
+            operation_id: Custom OpenAPI operation ID
             name: Route name for reverse routing via ``request.url_for()``
         """
 
@@ -151,6 +163,18 @@ class Velocix:
                 handler.__route_status_code__ = status_code  # type: ignore[attr-defined]
             if response_model is not None:
                 handler.__response_model__ = response_model  # type: ignore[attr-defined]
+            if tags is not None:
+                handler.__route_tags__ = tags  # type: ignore[attr-defined]
+            if summary is not None:
+                handler.__route_summary__ = summary  # type: ignore[attr-defined]
+            if description is not None:
+                handler.__route_description__ = description  # type: ignore[attr-defined]
+            if deprecated:
+                handler.__route_deprecated__ = True  # type: ignore[attr-defined]
+            if not include_in_schema:
+                handler.__route_include_in_schema__ = False  # type: ignore[attr-defined]
+            if operation_id is not None:
+                handler.__route_operation_id__ = operation_id  # type: ignore[attr-defined]
             return handler
 
         return decorator
@@ -161,11 +185,19 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for GET routes"""
         return self.route(
-            path, {"GET"}, status_code=status_code, response_model=response_model, name=name
+            path, {"GET"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
         )
 
     def post(
@@ -174,11 +206,19 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for POST routes"""
         return self.route(
-            path, {"POST"}, status_code=status_code, response_model=response_model, name=name
+            path, {"POST"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
         )
 
     def put(
@@ -187,11 +227,19 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PUT routes"""
         return self.route(
-            path, {"PUT"}, status_code=status_code, response_model=response_model, name=name
+            path, {"PUT"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
         )
 
     def delete(
@@ -200,11 +248,19 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for DELETE routes"""
         return self.route(
-            path, {"DELETE"}, status_code=status_code, response_model=response_model, name=name
+            path, {"DELETE"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
         )
 
     def patch(
@@ -213,11 +269,19 @@ class Velocix:
         *,
         status_code: int | None = None,
         response_model: type[Any] | None = None,
+        tags: list[str] | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        deprecated: bool = False,
+        include_in_schema: bool = True,
+        operation_id: str | None = None,
         name: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for PATCH routes"""
         return self.route(
-            path, {"PATCH"}, status_code=status_code, response_model=response_model, name=name
+            path, {"PATCH"}, status_code=status_code, response_model=response_model,
+            tags=tags, summary=summary, description=description, deprecated=deprecated,
+            include_in_schema=include_in_schema, operation_id=operation_id, name=name
         )
 
     def websocket(
