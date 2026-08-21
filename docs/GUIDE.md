@@ -153,10 +153,12 @@ async def get_item(item_id: int):  # Automatically converted to int
 
 ### Query Parameters
 
+Any handler parameter that is not a path parameter becomes a query parameter:
+
 ```python
 @app.get("/search")
 async def search(
-    q: str,                    # Required query param
+    q: str,                    # Required query param (missing -> 422)
     limit: int = 10,           # Optional with default
     offset: int = 0,           # Optional with default
     sort: str | None = None    # Optional, can be None
@@ -171,37 +173,75 @@ async def search(
 
 Example: `GET /search?q=python&limit=20&offset=10`
 
-### Route Metadata
+### Parameter Injection: Query, Header, Cookie
 
-Add metadata for documentation:
+For explicit control over the source, use the `Query`, `Header`, and `Cookie`
+markers. The `Annotated` style is preferred (it keeps your code mypy-clean);
+the classic `= Query(...)` style also works.
 
 ```python
+from typing import Annotated
+from velocix import Cookie, Header, Query
+
+@app.get("/users")
+async def list_users(
+    page: Annotated[int, Query()] = 1,
+    limit: Annotated[int, Query(alias="per_page")] = 10,
+    user_agent: Annotated[str | None, Header()] = None,   # header "user-agent"
+    session_id: Annotated[str | None, Cookie()] = None,
+):
+    return {"page": page, "limit": limit, "ua": user_agent}
+```
+
+- `alias` maps the parameter to a different request name (e.g. `per_page`)
+- Header names convert `_` to `-` automatically (`user_agent` -> `user-agent`);
+  pass `convert_underscores=False` to opt out
+- Missing required parameters return a **422**
+- Values are converted to the annotated type (`int`, `float`, `bool`)
+
+### Route Metadata
+
+Set response status, response model, and a route name for reverse routing:
+
+```python
+from msgspec import Struct
+
+class UserOut(Struct):
+    id: int
+    name: str
+
 @app.get(
     "/users/{user_id}",
+    status_code=200,                # default status for non-Response returns
+    response_model=UserOut,         # validate + filter the returned dict
+    name="user",                    # for request.url_for("user", ...)
     summary="Get user by ID",
-    description="Retrieve a user's full profile information",
-    response_description="User profile data",
-    tags=["users"]
+    tags=["users"],
 )
 async def get_user(user_id: int):
-    return {"user_id": user_id}
+    return {"id": user_id, "name": "Ada", "secret": "hidden"}  # "secret" is filtered out
 ```
+
+- `status_code` defaults to 200 for dict/str returns (204 when the handler
+  returns `None`); an explicit `Response` return always wins
+- `response_model` (a msgspec `Struct`) validates and filters the returned
+dict, and serializes via `msgspec`
 
 ### Sub-Routers
 
-Organize routes into modules:
+Organize routes into modules and attach them with a prefix:
 
 ```python
 # routes/users.py
 from velocix.core.router import Router
 
-router = Router(prefix="/users", tags=["users"])
+router = Router()
 
 @router.get("/")
 async def list_users():
     return {"users": []}
 
-@router.get("/{user_id}")
+@router.get("/{user_id}", name="user")
 async def get_user(user_id: int):
     return {"user_id": user_id}
 ```
@@ -212,8 +252,43 @@ from velocix import Velocix
 from routes import users
 
 app = Velocix()
-app.include_router(users.router)
+app.include_router(users.router, prefix="/users")
 ```
+
+Named routes survive the prefix: `request.url_for("user", user_id=42)` returns
+`http://host/users/42` (see [Named Routes](#named-routes)).
+
+### Named Routes
+
+Name any route and build URLs back to it with `request.url_for`:
+
+```python
+@app.get("/items/{item_id}", name="item")
+async def get_item(request: Request, item_id: int):
+    return {"url": request.url_for("item", item_id=item_id)}
+```
+
+```python
+# -> {"url": "http://testserver/items/7"}
+```
+
+`request.url_for` returns an absolute URL (base URL + path). An unknown name
+raises `velocix.NoMatchFound`. `Router.url_path_for(name, ...)` returns the
+path only, without the base URL.
+
+### Static Files
+
+Serve a directory of files with `StaticFiles`, mounted under a path prefix:
+
+```python
+from velocix import StaticFiles
+
+app.mount("/static", StaticFiles(directory="./public", html=True))
+```
+
+- `html=True` serves `index.html` for directory requests
+- MIME types are detected from the file extension; `HEAD` is supported
+- Path traversal is blocked (no `../` escapes)
 
 ---
 
@@ -246,14 +321,36 @@ async def create_user(request: Request):
 
 ### Form Data
 
+`request.form()` parses both `application/x-www-form-urlencoded` and
+`multipart/form-data` bodies. File parts become `UploadFile` objects:
+
 ```python
 @app.post("/upload")
 async def upload(request: Request):
     form = await request.form()
     name = form.get("name")
-    file = form.get("file")
+    file = form.get("file")        # UploadFile (filename, content-type, read())
     return {"name": name, "file": file.filename}
 ```
+
+You can also inject fields directly with the `Form` and `File` markers
+(combined with multipart uploads):
+
+```python
+from typing import Annotated
+from velocix import File, Form, UploadFile
+
+@app.post("/upload")
+async def upload(
+    title: Annotated[str, Form()],
+    doc: Annotated[UploadFile, File()],
+):
+    content = await doc.read()
+    return {"title": title, "size": len(content)}
+```
+
+For streaming multipart parsing (large uploads), see `MultipartForm` in
+`velocix.http.multipart`.
 
 ### Raw Body
 
@@ -397,6 +494,30 @@ async def create_user(user: User):
     # user is validated automatically
     return {"created": True, "user": user}
 ```
+
+### Request Body Binding
+
+A `Struct` (or `dict` / `list` / union) parameter is parsed from the JSON
+body automatically. Invalid or missing bodies return a structured **422**
+with the field location:
+
+```python
+from velocix.validation.models import Struct
+
+class OrderIn(Struct):
+    customer: str
+    qty: int
+
+@app.post("/orders", status_code=201)
+async def create_order(order: OrderIn):
+    return {"customer": order.customer, "qty": order.qty}
+```
+
+- Required body param with an empty/missing body -> **422**
+- Validation failure -> **422** with the msgspec message (carries the field
+  location, e.g. `- at $.qty`)
+- Make it optional: `order: OrderIn | None = None` -> default on empty body
+- Body params coexist with query/header/cookie params in the same handler
 
 ### Nested Models
 
@@ -553,17 +674,54 @@ app.add_middleware(TimingMiddleware, threshold=0.5)
 
 ### CORS
 
+Middleware classes are configured with `functools.partial` — the class is
+instantiated by the app with the wrapped handler:
+
 ```python
-from velocix.security.cors import CORSMiddleware
+from functools import partial
+from velocix import CORSMiddleware
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://example.com"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization"],
-    allow_credentials=True
+    partial(
+        CORSMiddleware,
+        allow_origins=["https://example.com"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=True,
+        allow_origin_regex=r"https://.*\.example\.com",  # extra origins by regex
+    )
 )
 ```
+
+- Origins are allowed if they match the `allow_origins` list **or**
+  `fullmatch` the `allow_origin_regex`
+- Pass `allow_origins=[]` together with a regex to allow regex-matched
+  origins only
+
+### Sessions
+
+Add signed, cookie-based sessions with `SessionMiddleware`:
+
+```python
+from functools import partial
+from velocix import SessionMiddleware
+
+app.add_middleware(partial(SessionMiddleware, secret_key="change-me", max_age=3600))
+
+@app.get("/counter")
+async def counter(request: Request):
+    request.session["count"] = request.session.get("count", 0) + 1
+    return {"count": request.session["count"]}
+```
+
+- The session is a JSON dict stored in a signed, timestamped cookie
+  (`itsdangerous`); tampered or expired cookies fall back to an empty session
+- The cookie is rewritten only when the session changes (created, mutated, or
+  cleared)
+- Config: `session_cookie`, `max_age`, `path`, `same_site`, `https_only`,
+  `domain`
+- Without the middleware, accessing `request.session` raises `AttributeError`
+  (Starlette parity)
 
 ### JWT Authentication
 
@@ -683,6 +841,37 @@ async def register(email: str, password: str):
         background=task
     )
 ```
+
+Background tasks run after the response is fully sent, on both streaming and
+non-streaming paths; errors are logged, not raised.
+
+---
+
+## Response Caching
+
+Cache request-independent responses with `@cache_response` — cache hits skip
+the handler *and* serialization entirely:
+
+```python
+from velocix import Velocix, cache_response
+
+app = Velocix()
+
+@app.get("/items")
+@cache_response(ttl=60)
+async def items(request):
+    return {"items": ITEMS}   # handler runs at most once per 60s
+```
+
+Cached responses carry:
+
+- **`ETag`** — xxh64 of the serialized body, computed once at store time
+- **`Cache-Control: public, max-age=<ttl>`**
+- **Conditional requests** — a matching `If-None-Match` (GET/HEAD) is answered
+  with `304 Not Modified` and an empty body; exact, `*`, and list values are
+  supported
+
+Only cache handlers whose output does not depend on the request.
 
 ---
 

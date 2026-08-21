@@ -133,6 +133,56 @@ so only handlers with request-independent output should use it.
 | In-process `/items`-style (7.9 KB) | 48.5K req/s | **379K req/s (7.8×)** |
 | Live granian `/items`-style, 4 workers | 85.9K req/s | **147.7K req/s (1.7×)** |
 
+### Round 4 — positional dispatch (call_mode 4)
+
+Added a fast dispatch path for handlers whose signature is only `(request,
+path_param)`. Instead of building a kwargs dict and splatting it with
+`handler(**kwargs)`, call_mode 4 builds a positional tuple and calls
+`handler(request, user_id)` directly. This uses CPython's vectorcall fast
+path, skipping the dict allocation + keyword-name mapping.
+
+Measured: kwargs path = 289 ns vs positional = 155 ns (46% reduction in
+dispatch cost).
+
+| Test | Before | After |
+|---|---|---|
+| In-process `/users` | ~163K req/s | ~175K req/s |
+| wrk2 `/users` p99.9 (R=1000) | 14.48 ms | 3.38 ms |
+
+### Round 5 — opt-in route metrics
+
+Removed the per-request `RouteMetrics` chain from the router hot path.
+`RouteMetrics` was never read anywhere in the codebase — `get_metrics()`
+was dead code, and `__route_metrics__` was only written to, never read.
+
+Per-request cost removed:
+- `CachedRoute.cache_hits += 1` on every cache hit (attribute mutation)
+- `time.time()` called 3x on dynamic route first hit (1 redundant)
+- `RouteMetrics()` dataclass allocation on every unique dynamic route
+
+| Test | Before | After |
+|---|---|---|
+| In-process `/users` interleaved A/B | 183K req/s | 194K req/s (+6%) |
+
+### Round 6 — bounded response cache + header scan
+
+Two fixes, both referenced from production frameworks:
+
+1. **Bounded response cache** (pattern from Pallets/cachelib `SimpleCache._prune`):
+   `_response_cache` was unbounded — every unique query string created a
+   permanent entry. Added `_CACHE_MAX_SIZE` (1024) with eviction on insert:
+   sweep expired first, then evict oldest if still over threshold.
+
+2. **Linear scan for If-None-Match** (pattern from Starlette `Headers`):
+   `_request_if_none_match` built a full `dict()` from scope headers just
+   to do one `.get()`. Replaced with linear scan of the header list.
+   Measured: 508ns dict vs 270ns linear at 15 headers (2x faster).
+
+| Test | Before | After |
+|---|---|---|
+| In-process `/users` median | 4,714 ns | 4,237 ns (-10%) |
+| In-process `/users` p99 | 6,467 ns | 5,654 ns (-12.6%) |
+
 ## What is NOT worth doing (yet)
 
 Based on profiles, not vibes:
@@ -153,6 +203,45 @@ Based on profiles, not vibes:
 - **Interpreter-level JIT.** The CPython 3.13 experimental JIT showed no
   measurable gain on this workload and the remaining pure-Python cost is
   already small.
+
+## Head-to-Head: Velocix vs Starlette (direct ASGI)
+
+Measured with direct ASGI calls (no HTTP server), same payloads, same routes.
+Starlette's cost comes from: regex routing per request, unconditional Request
+creation, `jsonable_encoder` + `json.dumps` for responses.
+
+| Route | Velocix | Starlette | Speedup |
+|---|---|---|---|
+| `/users/{id}` (path + query) | 4,237 ns | 14,140 ns | **3.3x** |
+| `/items` (7.9 KB JSON) | 15,943 ns | 65,656 ns | **4.1x** |
+| `/orders` (POST + validation) | 5,179 ns | 13,468 ns | **2.6x** |
+
+Where Velocix's time goes vs Starlette's:
+- Routing: cache hit ~160ns vs regex+dict ~4,500ns
+- Request: lazy (0ns if unused) vs unconditional ~1,700ns
+- Response: orjson ~2,500ns vs jsonable_encoder+json.dumps ~12,000ns
+
+## wrk2 Benchmark Harness
+
+The `benchmarks/bench_compare/` directory contains a wrk2-based harness for
+fixed-rate latency measurement across 7 frameworks.
+
+```bash
+# Run full battery: all frameworks, all routes, both rates
+bash benchmarks/bench_compare/run_wrk2_all.sh
+
+# Run single framework
+bash benchmarks/bench_compare/run_wrk2.sh velocix GET /users/42?limit=5 1000 3
+```
+
+Results (granian 4 workers, R=1000, best of 3):
+
+| Route | Framework | p50 | p99.9 |
+|---|---|---|---|
+| `/users` | Velocix | 1.63 ms | 7.15 ms |
+| `/users` | Starlette | 1.98 ms | 18.45 ms |
+| `/orders` POST | Velocix | 1.70 ms | 3.32 ms |
+| `/items` | Velocix | 1.85 ms | 2.59 ms |
 
 ## Reproducing
 
